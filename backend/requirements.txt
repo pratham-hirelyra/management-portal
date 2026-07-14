@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+asyncpg
+python-dotenv
+pydantic[email]
+httpx
+weasyprint
+google-cloud-storage
+google-auth
+openai
+pypdf
+PyMuPDF
+python-docx
+python-multipart
+playwright
+jinja2

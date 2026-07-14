@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=600">
+<title>JD Card</title>
+<style>
+  :root{
+    --gold:#f5c842;
+    --gold-deep:#e3b52e;
+    --ink:#1b2430;
+    --ink-2:#46505e;
+    --ink-3:#71808f;
+    --rule:#e7eaef;
+    --paper:#ffffff;
+    --cream:#faf6ee;
+    --font:'Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif;
+    --theme:#0d2b5e;
+    --theme-soft:#eef2f9;
+  }
+  body.t-navy  {--theme:#0d2b5e;--theme-soft:#eef2f9;}
+  body.t-teal  {--theme:#0f5b54;--theme-soft:#e7f3f1;}
+  body.t-plum  {--theme:#7a1f3d;--theme-soft:#f7eaef;}
+  body.t-forest{--theme:#1d5b34;--theme-soft:#e8f3ec;}
+  body.t-indigo{--theme:#2f2a6b;--theme-soft:#ecebf6;}
+  body.t-slate {--theme:#243240;--theme-soft:#eef1f4;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{background:#fff;}
+  body{
+    width:600px;font-family:var(--font);color:var(--ink);
+    -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+    text-rendering:optimizeLegibility;
+  }
+  .card{width:600px;background:var(--paper);overflow:hidden;border-top:4px solid var(--gold);}
+
+  .head{padding:18px 22px 0;display:flex;align-items:flex-start;gap:14px;}
+  .initials-tile{
+    width:52px;height:52px;flex:none;background:var(--theme);
+    border-radius:12px;display:flex;align-items:center;justify-content:center;
+    font-size:20px;font-weight:900;color:#fff;letter-spacing:-.01em;
+  }
+  .head-txt{flex:1;min-width:0;padding-top:2px;}
+  .eyebrow{
+    font-size:10.5px;font-weight:800;letter-spacing:.13em;
+    color:var(--gold-deep);text-transform:uppercase;
+  }
+  .co-name{
+    font-size:16px;font-weight:700;color:var(--ink);line-height:1.2;margin-top:4px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .jobtype{
+    flex:none;background:var(--theme);color:#fff;
+    font-size:11px;font-weight:700;letter-spacing:.02em;
+    padding:6px 11px;border-radius:999px;white-space:nowrap;margin-top:2px;
+  }
+
+  .role{
+    padding:13px 22px 0;
+    font-size:19px;font-weight:800;color:var(--theme);
+    line-height:1.18;letter-spacing:-.01em;
+  }
+  .loc{
+    display:flex;align-items:center;gap:6px;
+    padding:9px 22px 0;color:var(--ink-2);font-size:13px;font-weight:600;
+  }
+
+  .salary{
+    margin:15px 22px 0;
+    background:var(--theme);border-radius:12px;
+    padding:14px 18px;display:flex;align-items:center;gap:16px;
+  }
+  .salary .s-left{flex:1;min-width:0;}
+  .salary .s-label{
+    font-size:10px;font-weight:800;letter-spacing:.12em;
+    color:var(--gold);text-transform:uppercase;
+  }
+  .salary .s-val{
+    font-size:24px;font-weight:800;color:#fff;line-height:1.05;
+    margin-top:4px;letter-spacing:-.02em;
+  }
+  .salary .s-time{
+    flex:none;max-width:40%;text-align:right;
+    font-size:11.5px;font-weight:700;color:rgba(255,255,255,.78);line-height:1.35;
+    border-left:1px dashed rgba(245,200,66,.5);padding-left:16px;
+  }
+
+  .grid{
+    margin:16px 22px 0;
+    border:1px solid var(--rule);border-radius:12px;overflow:hidden;
+    display:grid;grid-template-columns:1fr 1fr;
+  }
+  .gcell{
+    padding:11px 14px;border-bottom:1px solid var(--rule);
+  }
+  .gcell:nth-child(odd){border-right:1px solid var(--rule);}
+  .gcell.full{grid-column:1 / -1;}
+  .gcell:last-child,.gcell.full:last-child{border-bottom:none;}
+  .glabel{
+    font-size:10px;font-weight:800;letter-spacing:.1em;
+    color:var(--ink-3);text-transform:uppercase;
+  }
+  .gval{font-size:13.5px;font-weight:700;color:var(--ink);line-height:1.35;margin-top:4px;}
+
+  .blocks{margin:15px 22px 0;display:flex;flex-direction:column;gap:11px;}
+  .blk .blabel{
+    font-size:10.5px;font-weight:800;letter-spacing:.1em;color:var(--theme);
+    text-transform:uppercase;display:flex;align-items:center;gap:7px;
+  }
+  .blk .blabel::before{content:"";width:14px;height:2px;background:var(--gold);border-radius:2px;}
+  .blk .bval{font-size:13.5px;font-weight:600;color:var(--ink-2);line-height:1.5;margin-top:5px;}
+
+  .note{
+    margin:13px 22px 0;
+    background:#faf7ef;border:1px solid #f0e7cf;border-radius:9px;
+    padding:10px 13px;font-size:12.5px;font-weight:600;color:var(--ink-2);line-height:1.45;
+  }
+  .note b{color:var(--theme);font-weight:800;}
+
+  .loc-photo{
+    margin:14px 22px 0;
+    border-radius:12px;overflow:hidden;
+    position:relative;height:180px;
+    background:#e8ecf0;
+  }
+  .loc-photo img{
+    width:100%;height:100%;object-fit:cover;display:block;
+  }
+  .loc-photo .photo-label{
+    position:absolute;bottom:0;left:0;right:0;
+    padding:6px 12px;
+    background:linear-gradient(transparent,rgba(0,0,0,.52));
+    font-size:10.5px;font-weight:700;color:rgba(255,255,255,.9);
+    letter-spacing:.06em;text-transform:uppercase;
+  }
+
+  .foot{
+    margin-top:18px;
+    background:var(--theme);
+    padding:10px 22px;
+    display:flex;align-items:center;justify-content:space-between;
+  }
+.foot .b-url{
+    font-size:10px;font-weight:600;color:rgba(255,255,255,.62);
+    letter-spacing:.05em;text-transform:uppercase;
+  }
+  .foot .b-url .sep{color:var(--gold);margin:0 5px;}
+</style>
+</head>
+<body class="t-{{ theme | default('navy') }}">
+  <div class="card">
+
+    <div class="head">
+      {% if company_initials %}<div class="initials-tile">{{ company_initials }}</div>{% endif %}
+      <div class="head-txt">
+        <div class="eyebrow">Now Hiring</div>
+        {% if company_name %}<div class="co-name">{{ company_name }}</div>{% endif %}
+      </div>
+      {% if job_type_label %}<div class="jobtype">{{ job_type_label }}</div>{% endif %}
+    </div>
+
+    {% if job_title %}<div class="role">{{ job_title }}</div>{% endif %}
+
+    {% if loc_text %}
+    <div class="loc">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0d2b5e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="2.6" fill="#0d2b5e" stroke="none"/></svg>
+      <span>{{ loc_text }}</span>
+    </div>
+    {% endif %}
+
+    {% if location_photo_url %}
+    <div class="loc-photo">
+      <img src="{{ location_photo_url }}" alt="Office location" />
+      <div class="photo-label">📍 {{ loc_text or 'Office Location' }}</div>
+    </div>
+    {% endif %}
+
+    {% if salary_str %}
+    <div class="salary">
+      <div class="s-left">
+        <div class="s-label">Monthly Salary</div>
+        <div class="s-val">{{ salary_str }}</div>
+      </div>
+      {% if job_timings %}<div class="s-time">{{ job_timings }}</div>{% endif %}
+    </div>
+    {% endif %}
+
+    <div class="grid">
+      {% if business_type %}<div class="gcell"><div class="glabel">Business</div><div class="gval">{{ business_type }}</div></div>{% endif %}
+      {% if industry %}<div class="gcell"><div class="glabel">Industry</div><div class="gval">{{ industry }}</div></div>{% endif %}
+      {% if office_str %}<div class="gcell"><div class="glabel">Work Mode</div><div class="gval">{{ office_str }}</div></div>{% endif %}
+      {% if num_employees %}<div class="gcell"><div class="glabel">Team Size</div><div class="gval">{{ num_employees }}</div></div>{% endif %}
+      {% if female_str %}<div class="gcell full"><div class="glabel">Female Staff</div><div class="gval">{{ female_str }}% female employees</div></div>{% endif %}
+    </div>
+
+    <div class="blocks">
+      {% if key_skills %}<div class="blk"><div class="blabel">Key Skills</div><div class="bval">{{ key_skills }}</div></div>{% endif %}
+      {% if tools %}<div class="blk"><div class="blabel">Tools</div><div class="bval">{{ tools }}</div></div>{% endif %}
+    </div>
+
+    {% if other_notes %}<div class="note"><b>Note&nbsp;·&nbsp;</b>{{ other_notes }}</div>{% endif %}
+
+    <div class="foot">
+      <span class="b-url">justaccountants.in<span class="sep">·</span>The Trusted Accountant Hiring Partner</span>
+    </div>
+
+
+  </div>
+</body>
+</html>

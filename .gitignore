@@ -1,0 +1,39 @@
+# secrets — never commit real env values or credentials
+.env
+.env.*
+!.env.example
+*service-account*.json
+*.pem
+*.key
+
+# Python (backend)
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Node (frontend)
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.tsbuildinfo
+
+# Firebase / deploy
+.firebase/
+
+# Claude Code local state
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# misc
+*.log
+.DS_Store
+
+# raw candidate/PII data dumps — should not live in version control
+backend/candidates_batch.txt
+backend/candidates_evaluated.txt
+backend/candidates_evaluated_jr.txt

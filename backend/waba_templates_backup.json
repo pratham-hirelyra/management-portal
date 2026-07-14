@@ -1,0 +1,739 @@
+[
+  {
+    "name": "client_reachout_new",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "HEADER",
+        "format": "IMAGE",
+        "example": {
+          "header_handle": [
+            "https://scontent.whatsapp.net/v/t61.29466-34/677627157_1178122795378041_841251007625248847_n.jpg?ccb=1-7&_nc_sid=8b1bef&_nc_ohc=5Q75sqv8Fy4Q7kNvwFQ3F0s&_nc_oc=AdoADffX-hw2rrbe4BJTcdHIUdnDMvl0Cf4DeK9P8y2WL8Lj4ZPZIsF19uFNYpYtRlw&_nc_zt=3&_nc_ht=scontent.whatsapp.net&edm=AH51TzQEAAAA&_nc_gid=J6eCiIhwTnXKym5BQNsxhw&_nc_tpa=Q5bMBQE3n2wkEKifkrpgIE_N2Pm9cyo6etxjgGdXzlbIoimDGsLg4tvFjGBz3KJ7kRvAXPtnm06hJGrn4g&oh=01_Q5Aa4gHWMLiaC41oGGjsmBbyPT98g1Xvr7I-uEeXR4hpobj6TA&oe=6A479F3B"
+          ]
+        }
+      },
+      {
+        "type": "BODY",
+        "text": "We noticed that you may be looking to hire an Accountant. This is a follow-up regarding that requirement.\n\nCan you please confirm the current status."
+      },
+      {
+        "type": "BUTTONS",
+        "buttons": [
+          {
+            "type": "QUICK_REPLY",
+            "text": "Position Open"
+          },
+          {
+            "type": "QUICK_REPLY",
+            "text": "Not Required"
+          }
+        ]
+      }
+    ],
+    "id": "1178122792044708"
+  },
+  {
+    "name": "hl_client_search_started",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi {{1}}! 👋\n\nThank you for onboarding with JustAccountants.\n\nWe have started shortlisting accountants that match your exact requirements and will share the candidate profiles with you within 48 hours.\n\nStay tuned!\nJustAccountants Team",
+        "example": {
+          "body_text": [
+            [
+              "Rohan Mehta"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "1708407780400163"
+  },
+  {
+    "name": "client_agreement_confirmed",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "HEADER",
+        "format": "DOCUMENT",
+        "example": {
+          "header_handle": [
+            "https://scontent.whatsapp.net/v/t61.29466-34/663658189_2155451758577312_5050365706691371917_n.pdf?ccb=1-7&_nc_sid=8b1bef&_nc_ohc=TJ0jRiTD_1wQ7kNvwFgHZu_&_nc_oc=AdpLGLa46_DVxngmRu7SeQBl6hD6XTfgMXi0lCH0sKLtg2szHvp59u0MRQR_SrrmWgU&_nc_zt=3&_nc_ht=scontent.whatsapp.net&edm=AH51TzQEAAAA&_nc_gid=J6eCiIhwTnXKym5BQNsxhw&_nc_tpa=Q5bMBQF3P_TuhtceAiC4s9UxARULjWNroWF2Tk5NDbyKvba1snICoNp91mIsCaU_k4GOs1xZv8SFXcFAqQ&oh=01_Q5Aa4gGB9AeYO3xkJR8AwF3ZBxbO342mCwtJNyIMm5gLVv0S4Q&oe=6A478D7F"
+          ]
+        }
+      },
+      {
+        "type": "BODY",
+        "text": "Your recruitment agreement with JustAccountants has been confirmed. 📄\n\nPlease find your agreement attached for your records.\n\nIf you need any assistance during your hiring journey, feel free to reach out to your RM directly.\n\nTeam JustAccountants"
+      }
+    ],
+    "id": "2155451755243979"
+  },
+  {
+    "name": "client_onboarding_r1",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi,\n\nWe noticed your hiring requirement form is still pending. To begin shortlisting candidates, please take 2 minutes to complete it:\n{{1}}\n\nWe look forward to hearing from you.",
+        "example": {
+          "body_text": [
+            [
+              "https://portal.justaccountants.in/client-onboard"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "979444681647855"
+  },
+  {
+    "name": "hl_client_slots_received",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi {{1}}, thank you for sharing your availability! 🙏\n\nHere are the slots you've shared:\n{{2}}\n\nWe'll confirm the interview schedule with the candidates and get back to you shortly.",
+        "example": {
+          "body_text": [
+            [
+              "Rohan Mehta",
+              "Mon 9 Jun 10am, Mon 9 Jun 2pm"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "1131187139228294"
+  },
+  {
+    "name": "client_interview_confirmed",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi {{1}}, an interview has been scheduled for {{2}} on {{3}}.\n\nView {{2}}'s profile and all your pipeline candidates here:\n{{4}}\n\nLet us know if you need to reschedule.\n\nTeam JustAccountants",
+        "example": {
+          "body_text": [
+            [
+              "Rajesh",
+              "Amit Sharma",
+              "Wednesday, 28 May 2026 · 10:00 AM – 11:00 AM",
+              "https://application.justaccountants.in/handover/abc123"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "1265219122262232"
+  },
+  {
+    "name": "hl_ob_r3",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi,\n\nThis is our final reminder to complete the hiring requirement form:\n{{1}}\n\nIf you no longer need our assistance, no action is needed.",
+        "example": {
+          "body_text": [
+            [
+              "https://portal.justaccountants.in/client-onboard"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "2963765827160662"
+  },
+  {
+    "name": "client_onboarding_r2",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi,\n\nFollowing up on the hiring form which is still incomplete. Without this, we are unable to begin the search for a qualified candidate on your behalf:\n{{1}}\n\nPlease complete it at your earliest.",
+        "example": {
+          "body_text": [
+            [
+              "https://portal.justaccountants.in/client-onboard"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "1003286185436613"
+  },
+  {
+    "name": "client_onboarding_1",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Thank you for your interest in *Just Accountants* 🙏\n\nWe're excited to help you find the right accountant for your business.\n\nLink: {{1}}\nPlease fill out your hiring requirements using the link above",
+        "example": {
+          "body_text": [
+            [
+              "https://www.justaccountants.in/client-onboard"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "840728195223390"
+  },
+  {
+    "name": "client_share_rm_details",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi {{1}},\n\nThank you for confirming your agreement with JustAccountants! 🎉\n\nSit back and relax while we find matching profiles for you.\nHere are the details for your dedicated Relationship Manager:\n\n- *Name*: {{2}}\n- *Phone*: {{3}}\n\nFeel free to reach out to them directly with any questions moving forward.\n\nWelcome aboard!\nTeam JustAccountants",
+        "example": {
+          "body_text": [
+            [
+              "Pratham",
+              "Abhishek Shah",
+              "9725549164"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "1538348674577626"
+  },
+  {
+    "name": "hl_slot_r3",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi {{1}},\n\nThis is our last reminder for interview slots for the {{2}} position. To avoid losing the shortlisted candidate, please share your availability as soon as possible.",
+        "example": {
+          "body_text": [
+            [
+              "Rahul",
+              "Accountant"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "1503760394463312"
+  },
+  {
+    "name": "hl_slot_r2",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi {{1}},\n\nQuick follow-up - we have not received your interview availability for {{2}} yet. Please share 2-3 preferred time slots so we can confirm the interview with the candidate.",
+        "example": {
+          "body_text": [
+            [
+              "Rahul",
+              "Accountant"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "1979940572911175"
+  },
+  {
+    "name": "hl_slot_r1",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi {{1}},\n\nWe are waiting on your available interview slots for the {{2}} position. A shortlisted candidate is ready to schedule. Please share your preferred dates and times at your earliest convenience.",
+        "example": {
+          "body_text": [
+            [
+              "Rahul",
+              "Accountant"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "1346596300702616"
+  },
+  {
+    "name": "hl_agr_r3",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi {{1}},\n\nThis is a final reminder regarding the pending service agreement for {{2}}. Please confirm your acceptance to move forward. For any concerns about the terms, feel free to reach out directly.",
+        "example": {
+          "body_text": [
+            [
+              "Rahul",
+              "Accountant"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "2069865343879433"
+  },
+  {
+    "name": "hl_agr_r2",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi {{1}},\n\nFollowing up on the service agreement for {{2}}. Your confirmation is needed before we can proceed with the placement. Please review and accept at your earliest convenience.",
+        "example": {
+          "body_text": [
+            [
+              "Rahul",
+              "Accountant"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "2032779153940301"
+  },
+  {
+    "name": "hl_agr_r1",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi {{1}},\n\nThe service agreement for the {{2}} placement has been shared with you. Kindly review and confirm your acceptance so we can begin shortlisting candidates for you.",
+        "example": {
+          "body_text": [
+            [
+              "Rahul",
+              "Accountant"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "1283191930598611"
+  },
+  {
+    "name": "client_reachout_1",
+    "status": "APPROVED",
+    "category": "MARKETING",
+    "language": "en",
+    "components": [
+      {
+        "type": "HEADER",
+        "format": "IMAGE",
+        "example": {
+          "header_handle": [
+            "https://scontent.whatsapp.net/v/t61.29466-34/688048960_812684024940936_5197690253319234617_n.jpg?ccb=1-7&_nc_sid=8b1bef&_nc_ohc=7yReEOaDxC4Q7kNvwG3TMmE&_nc_oc=AdpPMzdj3QSb_L_GCRG9fBKJPwlMC3RZF37ucxJdbiMWBxZFOY91ImuBdO-VzetKoos&_nc_zt=3&_nc_ht=scontent.whatsapp.net&edm=AH51TzQEAAAA&_nc_gid=J6eCiIhwTnXKym5BQNsxhw&_nc_tpa=Q5bMBQFgfgUq3H9vKpS5y9Bf_Kaik50spkgSTFP-qbyXFOuOM2Sbc_vn28GJH_ryup-NWmEYOlkUHcRpQw&oh=01_Q5Aa4gHIQELxQa41Aqe7YO7QiN-hcxB9AIiPyuz1PThNG6145A&oe=6A4779E6"
+          ]
+        }
+      },
+      {
+        "type": "BODY",
+        "text": "Click on the below button to get started"
+      },
+      {
+        "type": "BUTTONS",
+        "buttons": [
+          {
+            "type": "QUICK_REPLY",
+            "text": "Interested"
+          },
+          {
+            "type": "QUICK_REPLY",
+            "text": "Not Interested"
+          }
+        ]
+      }
+    ],
+    "id": "812654111610594"
+  },
+  {
+    "name": "client_send_agreement",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi {{1}},\n\nYour recruitment agreement with JustAccountants is ready for review.\n  \nTap below to view the full terms and confirm your details.\n{{2}}\n  \nOnce confirmed, we'll assign your dedicated RM and start sharing candidate profiles.\n\nTeam JustAccountants",
+        "example": {
+          "body_text": [
+            [
+              "Pratham",
+              "https://storage.googleapis.com/hirelyra-clients/R_Kumar_1/R_Kumar_1.pdf"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "947277481342067"
+  },
+  {
+    "name": "client_select_interview_time_slot",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Please share 2–3 preferred dates and time slots for the interview.\n\nYou can use the link below to submit your availability:\n{{1}}\n\nWe will coordinate accordingly and share the confirmation update.",
+        "example": {
+          "body_text": [
+            [
+              "https://calendly.com"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "1506819047653040"
+  },
+  {
+    "name": "candidate_re_reacout_step_two",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi {{1}} ji, this is the last followup regarding your recent interest for accounting role on WorkIndia.\n\nWe are moving to the final stage of scheduling *face-to-face meetings* with other candidates. \n\nPlease confirm, if you wish to proceed with the next step.",
+        "example": {
+          "body_text": [
+            [
+              "Pratham"
+            ]
+          ]
+        }
+      },
+      {
+        "type": "BUTTONS",
+        "buttons": [
+          {
+            "type": "QUICK_REPLY",
+            "text": "YES"
+          },
+          {
+            "type": "QUICK_REPLY",
+            "text": "Not Looking For Job"
+          }
+        ]
+      }
+    ],
+    "id": "1602096240906769"
+  },
+  {
+    "name": "candidate_re_reachout_step1",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hi {{1}} ji, your profile for the Accountant role is currently pending at the '1st Technical Round' stage. We are ready to initiate your assessment.\n\nPlease confirm if you wish to proceed with this step.",
+        "example": {
+          "body_text": [
+            [
+              "Pratham"
+            ]
+          ]
+        }
+      },
+      {
+        "type": "BUTTONS",
+        "buttons": [
+          {
+            "type": "QUICK_REPLY",
+            "text": "YES"
+          },
+          {
+            "type": "QUICK_REPLY",
+            "text": "Not Looking For Job"
+          }
+        ]
+      }
+    ],
+    "id": "982017864159639"
+  },
+  {
+    "name": "candidate_first_reachout_final",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hello {{1}} ji,\nThis is regarding your recent interest for the Accountant position on {{2}}.\n\nWe are sharing the job details for your review.\n\n*Job Details:*\n• *Company Name* : JustAccountants\n• *Location*: {{3}}\n• *Salary Range*: 25K–40K (based on experience)\n• *Open Positions*: 7\n\nIf you would like to continue, please confirm.",
+        "example": {
+          "body_text": [
+            [
+              "Pratham",
+              "workindia",
+              "Prahladnagar, Ahmedabad"
+            ]
+          ]
+        }
+      },
+      {
+        "type": "BUTTONS",
+        "buttons": [
+          {
+            "type": "QUICK_REPLY",
+            "text": "YES"
+          },
+          {
+            "type": "QUICK_REPLY",
+            "text": "Not Looking For Job"
+          }
+        ]
+      }
+    ],
+    "id": "1870986376936193"
+  },
+  {
+    "name": "candidate_voice_call_reschedule",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hello,\n\nWe noticed the call couldn’t be completed earlier.\n\nYou can reschedule it using the button below to continue your application."
+      },
+      {
+        "type": "BUTTONS",
+        "buttons": [
+          {
+            "type": "QUICK_REPLY",
+            "text": "Reschedule"
+          }
+        ]
+      }
+    ],
+    "id": "2742518406146608"
+  },
+  {
+    "name": "candidate_first_reachouts",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hello,\nThis is regarding your recent interest for the Accountant position on {{1}}.\n\nWe are sharing the job details for your review.\n\n*Job Details:*\n• *Company Name* : JustAccountants\n• *Location*: {{2}}\n• *Salary Range*: 25K–40K (based on experience)\n• *Open Positions*: 7\n\nIf you would like to continue, please confirm.",
+        "example": {
+          "body_text": [
+            [
+              "workindia",
+              "Prahladnagar, Ahmedabad"
+            ]
+          ]
+        }
+      },
+      {
+        "type": "BUTTONS",
+        "buttons": [
+          {
+            "type": "QUICK_REPLY",
+            "text": "YES"
+          }
+        ]
+      }
+    ],
+    "id": "1283843387010502"
+  },
+  {
+    "name": "candidate_select_another_time",
+    "status": "APPROVED",
+    "category": "MARKETING",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "No problem\n\nPlease choose a convenient time using the below button."
+      },
+      {
+        "type": "BUTTONS",
+        "buttons": [
+          {
+            "type": "FLOW",
+            "text": "Select Time Slot",
+            "flow_id": 1289668113120862,
+            "flow_action": "NAVIGATE",
+            "navigate_screen": "QUESTION_ONE"
+          }
+        ]
+      }
+    ],
+    "id": "1316879720358284"
+  },
+  {
+    "name": "candidate_evaluation_fail",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Thank you for taking our test! We really appreciate your effort.\n\nAt this time, we won't be able to share your CV with our clients for their current openings. Our clients are looking for people who are strong in the basics of accounting, and we feel you just need a little more practice in that area.\n\nPlease don't feel discouraged,  you are a good candidate with potential to grow.\n\nWe will keep your name on our list and lets stay in touch.\n\nKeep learning and keep trying!"
+      }
+    ],
+    "id": "1217880277083182"
+  },
+  {
+    "name": "candidate_voice_call_reminder",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hello,\n\nThis is a reminder that we will call you in the next 10 minutes.\n\nPlease be available to attend the call."
+      }
+    ],
+    "id": "1247558414149068"
+  },
+  {
+    "name": "candidate_voice_call_remindier",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hello,\n\nThis is a reminder that we will be calling you in the next 10 minutes.\n\nPlease be available to attend the call."
+      }
+    ],
+    "id": "904553565791713"
+  },
+  {
+    "name": "candidate_evaluation_pass",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Great news! You have successfully *passed* the test.🌟✨\n\nWe will contact you soon to understand your job preferences and then match you with suitable opportunities."
+      }
+    ],
+    "id": "900840992585819"
+  },
+  {
+    "name": "ai_call_scheduled",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Thank you for scheduling the call..!\n\nOur AI assistant Ravi will call you from *+91 8031137888* around *{{1}}*.\n\nThe call will take only 7-8 minutes of your time.",
+        "example": {
+          "body_text": [
+            [
+              "16th March 8:30 pm"
+            ]
+          ]
+        }
+      }
+    ],
+    "id": "1242113751319788"
+  },
+  {
+    "name": "candidate_reachout_v3",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hello,\n\nThis is regarding your recent application for the Accountant position.\n\nApplication Details:\n• Location: {{1}}\n• Salary Range: 25K–40K (based on experience)\n• Open Positions: 25\n\nIf you would like to continue, please confirm.",
+        "example": {
+          "body_text": [
+            [
+              "Ahmedabad"
+            ]
+          ]
+        }
+      },
+      {
+        "type": "BUTTONS",
+        "buttons": [
+          {
+            "type": "QUICK_REPLY",
+            "text": "YES"
+          },
+          {
+            "type": "QUICK_REPLY",
+            "text": "Not Looking For Job"
+          }
+        ]
+      }
+    ],
+    "id": "1549680893356396"
+  },
+  {
+    "name": "candidate_reachout_v2",
+    "status": "APPROVED",
+    "category": "UTILITY",
+    "language": "en",
+    "components": [
+      {
+        "type": "BODY",
+        "text": "Hello,\n\nThis is an update regarding your recent application for the Accountant position.\n\nApplication Details:\n• Location: {{1}}\n• Salary Range: 25K–40K (based on experience)\n• Open Positions: 25\n\nYour application is currently under review.\n\nIf you would like to continue with the screening process, please confirm.",
+        "example": {
+          "body_text": [
+            [
+              "Ahmedabad"
+            ]
+          ]
+        }
+      },
+      {
+        "type": "BUTTONS",
+        "buttons": [
+          {
+            "type": "QUICK_REPLY",
+            "text": "YES"
+          }
+        ]
+      }
+    ],
+    "id": "2366547627122943"
+  }
+]

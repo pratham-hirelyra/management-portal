@@ -1,0 +1,16 @@
+[
+  {
+    "origin": [
+      "https://portal.justaccountants.in",
+      "https://application.justaccountants.in",
+      "https://justaccountants-df5af.web.app",
+      "https://ja-management-portal-frontend-516179095350.asia-south1.run.app",
+      "https://ja-management-portal-frontend-24nxjd4jba-el.a.run.app",
+      "http://localhost:5173",
+      "http://localhost:5174"
+    ],
+    "method": ["PUT", "OPTIONS"],
+    "responseHeader": ["Content-Type", "Content-Range", "X-Goog-Upload-Status", "X-Goog-Upload-Command"],
+    "maxAgeSeconds": 3600
+  }
+]

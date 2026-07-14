@@ -1,0 +1,64 @@
+*Product Update — Changes Shipped (Last Week)*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+*Candidate Workflow*
+
+*1. Salary gate before AI call*
+If a candidate's current salary exceeds the client's maximum budget (after our internal adjustment), the system now skips the AI screening call entirely. This prevents wasting AI call credits on candidates who will never clear the salary filter downstream and keeps the pipeline lean from the start.
+
+*2. Drop-off re-reachout timing tightened (T → T+3 → T+8 → T+24)*
+We observed that candidates who completed their AI call were being re-contacted after a 24-hour gap under the old weekly schedule — long enough for them to forget who we were. The new sequence fires immediately at tighter intervals so we reach them while our name is still fresh, improving re-engagement rate.
+
+*3. Multiple opportunities shown to candidate + dedicated candidate portal built*
+We found that candidates struggle to take leave from work, and were being asked to travel to the same area twice for different clients. We were also losing good candidates when a single client took too long to decide. Showing up to 3 relevant positions simultaneously on a dedicated candidate portal — built from scratch — gives candidates a better experience, reduces unnecessary travel, and increases the chances of a successful match per contact.
+
+*4. Auto-removal of expired interview slots*
+Candidates were seeing slots from previous days on their selection screen, causing confusion about which slots were actually available. Past slots are now automatically hidden.
+
+*5. Muslim candidate opt-in toggle on RM dashboard*
+Most of our clients have a preference here, and candidates were receiving a JD share message followed almost immediately by a rejection message — multiple times. This was a poor experience for the candidate and wasted outreach credits. The system now excludes Muslim candidates from JD outreach by default, with a per-client toggle on the RM dashboard to enable it when appropriate.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*Client Workflow*
+
+*6. Location filter after scraping (Ahmedabad / Gandhinagar only)*
+We were burning sourcing credits on clients outside our serviceable area. Now the moment a client's scraping completes, the system checks their address and immediately marks them Disqualified if they are not based in Ahmedabad or Gandhinagar — no reachout is sent.
+
+*7. RM can send agreement directly from the portal*
+Clients were sometimes not seeing the agreement or requesting it to be resent. RMs now have a direct action on the client profile to resend the agreement instantly, without going through a separate flow.
+
+*8. Gender as a hard filter in matchmaking*
+Clients specifically require gender matching, and treating it as a soft preference was surfacing mismatched candidates and slowing down the matchmaking cycle. Gender is now enforced as a hard exclusion before scoring, making reachouts more precise and placements faster.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*Matchmaking*
+
+*9. Single-run cap of 12 high-quality candidates*
+When a client took a long time to respond, a large portion of our high-quality candidate pool was getting locked to that one client for an extended period. Capping each auto-matchmake run at 12 MMS > 70 candidates ensures the pool is not over-committed to a single slow-moving client, while subsequent runs continue filling the gap toward the overall target of 25.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*RM Dashboard*
+
+*10. Full interview management from a single screen*
+RMs were switching between multiple screens to manage clients and candidates. We consolidated everything — setting client slots, viewing candidate cards, booking and rescheduling interviews, and marking interviews done — into one dedicated RM dashboard for easier management of all active clients.
+
+*11. Interview reminders at T−3h and T−1h*
+Candidates were forgetting to show up for interviews. Two automatic WhatsApp reminders now go out before each interview — three hours prior and one hour prior — with company name, role, time, and HR contact, directly reducing no-shows.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*Trust & Conversion*
+
+*12. Locked profile view when a prospect clicks "View Profile"*
+A clean frontend opens showing 3 matching profiles with evaluation reports, job stability scores, and notice period — candidate numbers masked. Triggers at the moment of peak prospect intent to build credibility before the first call.
+
+*13. Client testimonial page*
+Titus Pharma HR video testimonial above the fold, client logos below. Accessible via "Our Happy Clients" button.
+
+*14. Mask candidate phone numbers in CVs*
+Clients were visiting CVs and directly calling or emailing candidates, bypassing the platform entirely. Candidate contact numbers are now hidden in all CVs shared with clients.
+
+*15. WhatsApp verified business tick*
+Blue tick verification added on our WhatsApp sender accounts to build delivery trust with both clients and candidates.
+
+*16. AI voice agent for interview reminders and slot booking*
+Candidates were neglecting WhatsApp messages for interview reminders and slot confirmations. Voice calls get significantly better attention and response rates, reducing manual follow-up load on RMs.
