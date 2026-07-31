@@ -1341,19 +1341,6 @@ async def _retry_dropped_calls(conn: asyncpg.Connection, test_mode: bool = False
     thresholds = _DROP_RETRY_TEST_THRESHOLDS if test_mode else _DROP_RETRY_THRESHOLDS
     now        = datetime.now(timezone.utc)
 
-    # Idempotent column additions
-    for ddl in [
-        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS call_drop_retry_count int DEFAULT 0",
-        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS last_call_drop_retry_at timestamptz",
-    ]:
-        await conn.execute(ddl)
-
-    for ddl in [
-        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS drop_final_sent boolean DEFAULT false",
-        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS cv_phone_redacted boolean DEFAULT false",
-    ]:
-        await conn.execute(ddl)
-
     rows = await conn.fetch(
         """
         SELECT id, name, phone,
@@ -1963,21 +1950,6 @@ async def cron_client_followups(
     expected = os.environ.get("CRON_SECRET", "")
     if expected and x_cron_secret != expected:
         raise HTTPException(401, "Invalid cron secret")
-
-    # Idempotent migrations — enum values first (must run outside transaction; asyncpg is auto-commit by default)
-    for enum_val in ["wa_sent", "slot_requested_client", "slot_sent_candidate", "interview_scheduled"]:
-        await conn.execute(f"ALTER TYPE mapping_stage ADD VALUE IF NOT EXISTS '{enum_val}'")
-
-    for ddl in [
-        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS agreement_sent_at timestamptz",
-        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS agreement_reminder_count int DEFAULT 0",
-        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS last_agreement_reminder_at timestamptz",
-        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS last_feedback_reminder_at timestamptz",
-        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS last_review_reminder_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS slot_reminder_count int DEFAULT 0",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS last_slot_reminder_at timestamptz",
-    ]:
-        await conn.execute(ddl)
 
     onboarding           = await _followup_onboarding(conn, test_mode=test)
     agreement            = await _followup_agreement(conn, test_mode=test)
@@ -3232,29 +3204,6 @@ async def cron_candidate_followups(
     if not test and not _is_business_hours():
         return {"data": {"skipped": "outside_business_hours"}, "ok": True}
 
-    # Idempotent column additions
-    for ddl in [
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS slot_link_sent_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS slot_ai_call_triggered boolean DEFAULT false",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS slot_selection_reminder_count int DEFAULT 0",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS last_slot_selection_reminder_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS interview_day_reminder_sent bool DEFAULT false",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS interview_3h_reminder_sent bool DEFAULT false",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS interview_1h_reminder_sent bool DEFAULT false",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS post_interview_feedback_sent bool DEFAULT false",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS documents_requested_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS passive_form_sent_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS passive_form_reminder_count int DEFAULT 0",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS interested_form_sent_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS interested_form_reminder_count int DEFAULT 0",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS join_intent_requested_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS join_intent_responded_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS join_decline_reason text",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS documents_reminder_count int DEFAULT 0",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS last_documents_reminder_at timestamptz",
-    ]:
-        await conn.execute(ddl)
-
     try:
         interested_form = await _followup_interested_form(conn, test_mode=test)
         # passive_form re-reachout disabled — form is no longer sent on NOT_INTERESTED_ROLE
@@ -3661,11 +3610,6 @@ async def cron_enrich_clients(
     expected = os.environ.get("CRON_SECRET", "")
     if expected and x_cron_secret != expected:
         raise HTTPException(401, "Invalid cron secret")
-
-    # Idempotent migration
-    await conn.execute(
-        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS enrich_status text DEFAULT 'pending'"
-    )
 
     # Fetch pending clients — includes unclassified (is_recruiter IS NULL) so the
     # combined prompt can classify + enrich them in a single web-search call.
