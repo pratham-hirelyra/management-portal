@@ -508,6 +508,7 @@ async def _do_candidate_reachout(conn: asyncpg.Connection, test_mode: bool = Fal
             ccm.wa_sent_at,
             c.phone,
             c.name          AS candidate_name,
+            c.form_submitted,
             (
                 SELECT COUNT(*) FROM whatsapp_messages wm
                 WHERE wm.mapping_id = ccm.id
@@ -545,7 +546,11 @@ async def _do_candidate_reachout(conn: asyncpg.Connection, test_mode: bool = Fal
             continue
 
         for row in mappings:
-            send_count = int(row["send_count"])
+            # send_count includes the original outreach send (also logged as
+            # message_type='candidate_intent_ask'), which isn't itself a
+            # re-reachout attempt — subtract it so the first actual
+            # re-reachout indexes into _REACHOUT_TEMPLATES[0], not [1].
+            send_count = max(0, int(row["send_count"]) - 1)
             if send_count >= len(thresholds):
                 skipped += 1
                 continue
@@ -567,58 +572,95 @@ async def _do_candidate_reachout(conn: asyncpg.Connection, test_mode: bool = Fal
 
             mapping_id = row["mapping_id"]
             attempt = next_idx + 1  # 1-based attempt number
-
-            re_template = _REACHOUT_TEMPLATES[next_idx]
             cand_name = (row.get("candidate_name") or "").split()[0] if row.get("candidate_name") else ""
+            client_dict = dict(client)
 
-            _RE_INTROS = [
-                "You haven't responded to our earlier message. Here are the job details again:",
-                "We're still shortlisting candidates. Here are the job details one more time:",
-                "This is our final follow-up. Interview slots are filling up fast:",
-            ]
-            jd_components = _build_jd_components(dict(client))
-            candidate_entry = {
-                "phone": phone,
-                "mapping_id": str(mapping_id),
-                "name": cand_name,
-                "intro": _RE_INTROS[next_idx],
-                "maps_url": _client_maps_url(dict(client)),
-            }
-
-            try:
-                from services.jd_card_service import generate_jd_card
-                jd_image_url = client.get("jd_card_url") if isinstance(client, dict) else client["jd_card_url"]
-                if not jd_image_url:
-                    print(f"[cron] jd_card_url missing for re-reachout {mapping_id} — generating now")
+            if row["form_submitted"]:
+                # Already has a portal profile — point them back to their
+                # dashboard, not an /apply form they've already filled out.
+                # Uses the dedicated hl_cand_re_r{1,2,3}_ff sequence (same
+                # View Details/Update Profile/Not Looking buttons as
+                # hl_cand_jd_share_5, no image, but a distinct intro line per
+                # attempt) rather than resending the initial-send template
+                # itself 3 times over.
+                used_template = _FF_REACHOUT_TEMPLATES[next_idx]
+                candidate_entry = {
+                    "phone": phone,
+                    "mapping_id": str(mapping_id),
+                    "name": cand_name,
+                    "intro": _FF_INTROS[next_idx],
+                    "company_name": client_dict.get("company_name") or "",
+                    "role": client_dict.get("job_title") or "",
+                    # Matches routers/matching.py's initial-send formatting exactly
+                    # (no comma grouping, job_location falling back to location).
+                    "salary": str(int(client_dict["max_salary"])) if client_dict.get("max_salary") else "",
+                    "area": client_dict.get("job_location") or client_dict.get("location") or "",
+                }
+                try:
+                    await msg91.send_bulk_intent([candidate_entry], {}, template_name=used_template)
+                except Exception as e:
+                    print(f"[cron] candidate re-reachout (form-filled) attempt {attempt} failed for {phone} mapping {mapping_id}: {e}")
                     try:
-                        client_dict = dict(client) if not isinstance(client, dict) else client
-                        jd_image_url = await generate_jd_card(client_dict)
-                        await conn.execute(
-                            "UPDATE clients SET jd_card_url = $1 WHERE id = $2",
-                            jd_image_url, client_dict["id"],
-                        )
-                    except Exception as _img_err:
-                        print(f"[cron] JD card generation failed for re-reachout {mapping_id}: {_img_err}")
-                        jd_image_url = None
-                if not jd_image_url:
-                    print(f"[cron] Skipping re-reachout {mapping_id} — JD card image unavailable")
+                        from services.google_chat_service import send_alert
+                        await send_alert("Candidate re-reachout send failed", str(e), severity="ERROR", context={"phone": phone, "mapping_id": str(mapping_id), "attempt": attempt})
+                    except Exception:
+                        pass
                     skipped += 1
                     continue
-                await msg91.send_bulk_intent(
-                    [candidate_entry],
-                    jd_components,
-                    template_name=re_template,
-                    image_url=jd_image_url,
-                )
-            except Exception as e:
-                print(f"[cron] candidate re-reachout attempt {attempt} failed for {phone} mapping {mapping_id}: {e}")
+            else:
+                used_template = _REACHOUT_TEMPLATES[next_idx]
+
+                # Kept neutral/informational on purpose — Meta's classifier flagged the
+                # original r1/r3 wording ("you haven't responded", "filling up fast")
+                # as MARKETING; must match the wording the hl_cand_re_r*_v3 templates
+                # were actually reviewed and approved as UTILITY with.
+                _RE_INTROS = [
+                    "Sharing the job details again for your review:",
+                    "We're still shortlisting candidates. Here are the job details one more time:",
+                    "Here are the job details once more for your review:",
+                ]
+                jd_components = _build_jd_components(client_dict)
+                candidate_entry = {
+                    "phone": phone,
+                    "mapping_id": str(mapping_id),
+                    "name": cand_name,
+                    "intro": _RE_INTROS[next_idx],
+                    "maps_url": _client_maps_url(client_dict),
+                }
+
                 try:
-                    from services.google_chat_service import send_alert
-                    await send_alert("Candidate re-reachout send failed", str(e), severity="ERROR", context={"phone": phone, "mapping_id": str(mapping_id), "attempt": attempt})
-                except Exception:
-                    pass
-                skipped += 1
-                continue
+                    from services.jd_card_service import generate_jd_card
+                    jd_image_url = client_dict.get("jd_card_url")
+                    if not jd_image_url:
+                        print(f"[cron] jd_card_url missing for re-reachout {mapping_id} — generating now")
+                        try:
+                            jd_image_url = await generate_jd_card(client_dict)
+                            await conn.execute(
+                                "UPDATE clients SET jd_card_url = $1 WHERE id = $2",
+                                jd_image_url, client_dict["id"],
+                            )
+                        except Exception as _img_err:
+                            print(f"[cron] JD card generation failed for re-reachout {mapping_id}: {_img_err}")
+                            jd_image_url = None
+                    if not jd_image_url:
+                        print(f"[cron] Skipping re-reachout {mapping_id} — JD card image unavailable")
+                        skipped += 1
+                        continue
+                    await msg91.send_bulk_intent(
+                        [candidate_entry],
+                        jd_components,
+                        template_name=used_template,
+                        image_url=jd_image_url,
+                    )
+                except Exception as e:
+                    print(f"[cron] candidate re-reachout attempt {attempt} failed for {phone} mapping {mapping_id}: {e}")
+                    try:
+                        from services.google_chat_service import send_alert
+                        await send_alert("Candidate re-reachout send failed", str(e), severity="ERROR", context={"phone": phone, "mapping_id": str(mapping_id), "attempt": attempt})
+                    except Exception:
+                        pass
+                    skipped += 1
+                    continue
 
             await conn.execute(
                 """
@@ -626,9 +668,9 @@ async def _do_candidate_reachout(conn: asyncpg.Connection, test_mode: bool = Fal
                     (candidate_id, mapping_id, message_type, direction, phone, status, sent_at, used_template_name)
                 VALUES ($1, $2, 'candidate_intent_ask', 'outbound', $3, 'sent', now(), $4)
                 """,
-                row["candidate_id"], mapping_id, phone, re_template,
+                row["candidate_id"], mapping_id, phone, used_template,
             )
-            print(f"[cron] re-reachout attempt {attempt} sent to {phone} mapping {mapping_id} ({elapsed_hours:.1f}h since last send)")
+            print(f"[cron] re-reachout attempt {attempt} ({used_template}) sent to {phone} mapping {mapping_id} ({elapsed_hours:.1f}h since last send)")
             sent += 1
 
     return sent, skipped
@@ -1302,7 +1344,31 @@ _ONBOARDING_THRESHOLDS  = [3, 8, 12]        # hours from last reminder (or onboa
 _AGREEMENT_THRESHOLDS   = [3, 8, 12]        # hours from last reminder (or agreement_sent_at, biz hrs only)
 _SLOT_THRESHOLDS        = [3, 8, 12]        # hours from last reminder (or slot_requested_at)
 _REACHOUT_THRESHOLDS    = [3, 8, 24] # hours from last sent message (candidate JD re-reachout)
-_REACHOUT_TEMPLATES     = ["hl_cand_re_r1_img", "hl_cand_re_r2_img", "hl_cand_re_r3b_img"]
+# Submitted to Meta 2026-07-31. Unlike the old *_img templates (quick-reply
+# only, no link), these have real URL buttons matching hl_cand_jd_img_v3's
+# pattern — see services/msg91_service.py's _URL_BUTTON_TEMPLATES routing.
+# hl_cand_re_r1_v3/r3_v3 first came back auto-categorized MARKETING (Meta's
+# classifier flagged the urgency-style intro text — "you haven't responded",
+# "filling up fast"); deleted and resubmitted as _v3b with neutral wording
+# once Meta's per-name category-change cooldown made reusing the same name
+# impractical (up to 4 weeks once a name has been APPROVED once). r2_v3
+# approved as UTILITY on the first try, but was later hand-edited on Meta to
+# use static button URLs instead of the dynamic m.9m.io/{{1}} pattern the
+# other two use — deleted and recreated as r2_v3b with the same dynamic
+# shape for naming/behavior consistency across all three. Sends will fail
+# (alerted, not silent) until each one clears Meta's review.
+_REACHOUT_TEMPLATES     = ["hl_cand_re_r1_v3b", "hl_cand_re_r2_v3b", "hl_cand_re_r3_v3b"]
+
+# Dedicated re-reachout sequence for form-filled candidates — submitted to
+# Meta 2026-07-31, PENDING. Same View Details/Update Profile/Not Looking
+# buttons as hl_cand_jd_share_5 (no image), but with a distinct intro line
+# per attempt instead of resending the exact same template 3 times.
+_FF_REACHOUT_TEMPLATES  = ["hl_cand_re_r1_ff", "hl_cand_re_r2_ff", "hl_cand_re_r3_ff"]
+_FF_INTROS = [
+    "Following up on this opportunity — here are the details again:",
+    "We're still shortlisting candidates for this role. Here are the details once more:",
+    "Here are the job details once more for your review:",
+]
 
 _TEST_THRESHOLDS        = [2, 2, 2]         # minutes (used when test_mode=True, 3-step flows)
 _REACHOUT_TEST_THRESHOLDS = [2, 2, 2]       # minutes (used when test_mode=True, 3-step reachout)
@@ -1340,19 +1406,6 @@ async def _retry_dropped_calls(conn: asyncpg.Connection, test_mode: bool = False
     divisor    = 60 if test_mode else 3600
     thresholds = _DROP_RETRY_TEST_THRESHOLDS if test_mode else _DROP_RETRY_THRESHOLDS
     now        = datetime.now(timezone.utc)
-
-    # Idempotent column additions
-    for ddl in [
-        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS call_drop_retry_count int DEFAULT 0",
-        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS last_call_drop_retry_at timestamptz",
-    ]:
-        await conn.execute(ddl)
-
-    for ddl in [
-        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS drop_final_sent boolean DEFAULT false",
-        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS cv_phone_redacted boolean DEFAULT false",
-    ]:
-        await conn.execute(ddl)
 
     rows = await conn.fetch(
         """
@@ -1964,21 +2017,6 @@ async def cron_client_followups(
     if expected and x_cron_secret != expected:
         raise HTTPException(401, "Invalid cron secret")
 
-    # Idempotent migrations — enum values first (must run outside transaction; asyncpg is auto-commit by default)
-    for enum_val in ["wa_sent", "slot_requested_client", "slot_sent_candidate", "interview_scheduled"]:
-        await conn.execute(f"ALTER TYPE mapping_stage ADD VALUE IF NOT EXISTS '{enum_val}'")
-
-    for ddl in [
-        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS agreement_sent_at timestamptz",
-        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS agreement_reminder_count int DEFAULT 0",
-        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS last_agreement_reminder_at timestamptz",
-        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS last_feedback_reminder_at timestamptz",
-        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS last_review_reminder_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS slot_reminder_count int DEFAULT 0",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS last_slot_reminder_at timestamptz",
-    ]:
-        await conn.execute(ddl)
-
     onboarding           = await _followup_onboarding(conn, test_mode=test)
     agreement            = await _followup_agreement(conn, test_mode=test)
     reachout_ai_call     = {"sent": 0, "skipped": 0, "note": "disabled"}
@@ -2078,7 +2116,11 @@ async def _followup_interested_form(conn: asyncpg.Connection, test_mode: bool = 
     divisor    = 60 if test_mode else 3600
     thresholds = _INTERESTED_FORM_TEST_THRESHOLDS if test_mode else _INTERESTED_FORM_THRESHOLDS
     now = datetime.now(timezone.utc)
-    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173").strip().rstrip("/")
+    # Candidate-facing link — must be CANDIDATE_PORTAL_URL (the real candidate
+    # portal domain), not FRONTEND_URL (management-portal's own frontend,
+    # which is what candidates would otherwise be sent — unreachable for them
+    # in production since it's a localhost default there).
+    frontend_url = os.environ.get("CANDIDATE_PORTAL_URL", os.environ.get("FRONTEND_URL", "http://localhost:5174")).strip().rstrip("/")
     form_url = f"{frontend_url}/apply"
 
     rows = await conn.fetch(
@@ -2145,7 +2187,9 @@ async def _followup_passive_form(conn: asyncpg.Connection, test_mode: bool = Fal
     divisor    = 60 if test_mode else 3600
     thresholds = _PASSIVE_FORM_TEST_THRESHOLDS if test_mode else _PASSIVE_FORM_THRESHOLDS
     now = datetime.now(timezone.utc)
-    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173").strip().rstrip("/")
+    # Same fix as _followup_interested_form — candidate-facing link must use
+    # CANDIDATE_PORTAL_URL, not FRONTEND_URL (unreachable localhost default).
+    frontend_url = os.environ.get("CANDIDATE_PORTAL_URL", os.environ.get("FRONTEND_URL", "http://localhost:5174")).strip().rstrip("/")
     form_url = f"{frontend_url}/apply?intent=passive"
 
     rows = await conn.fetch(
@@ -3232,29 +3276,6 @@ async def cron_candidate_followups(
     if not test and not _is_business_hours():
         return {"data": {"skipped": "outside_business_hours"}, "ok": True}
 
-    # Idempotent column additions
-    for ddl in [
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS slot_link_sent_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS slot_ai_call_triggered boolean DEFAULT false",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS slot_selection_reminder_count int DEFAULT 0",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS last_slot_selection_reminder_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS interview_day_reminder_sent bool DEFAULT false",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS interview_3h_reminder_sent bool DEFAULT false",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS interview_1h_reminder_sent bool DEFAULT false",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS post_interview_feedback_sent bool DEFAULT false",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS documents_requested_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS passive_form_sent_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS passive_form_reminder_count int DEFAULT 0",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS interested_form_sent_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS interested_form_reminder_count int DEFAULT 0",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS join_intent_requested_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS join_intent_responded_at timestamptz",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS join_decline_reason text",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS documents_reminder_count int DEFAULT 0",
-        "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS last_documents_reminder_at timestamptz",
-    ]:
-        await conn.execute(ddl)
-
     try:
         interested_form = await _followup_interested_form(conn, test_mode=test)
         # passive_form re-reachout disabled — form is no longer sent on NOT_INTERESTED_ROLE
@@ -3661,11 +3682,6 @@ async def cron_enrich_clients(
     expected = os.environ.get("CRON_SECRET", "")
     if expected and x_cron_secret != expected:
         raise HTTPException(401, "Invalid cron secret")
-
-    # Idempotent migration
-    await conn.execute(
-        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS enrich_status text DEFAULT 'pending'"
-    )
 
     # Fetch pending clients — includes unclassified (is_recruiter IS NULL) so the
     # combined prompt can classify + enrich them in a single web-search call.

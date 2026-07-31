@@ -639,14 +639,17 @@ async def _handle_interested_response(
                 print(f"[flow] candidate {row['candidate_id']} failed hard filter for client {row['client_id']}: {reason}")
                 await decline_for_filter_mismatch(conn, mapping_id, row["candidate_id"], row["client_id"], from_phone, reason_code)
         else:
-            # form_submitted=false here now only ever comes from hl_cand_jd_img_v3's
-            # Interested Role click (old quick-reply template only ever reaches this
-            # function with form_submitted=true) — the candidate already landed on
-            # /apply directly via the button URL, so no need to text them the link
-            # or send the intro video again. AI-call trigger still fires unchanged
-            # from post_form_submission_flow once they actually submit the form.
-            # interested_form_sent_at is still stamped so the existing reminder cron
-            # (_followup_interested_form) keeps nudging them if they never submit.
+            # form_submitted=false + a real inbound INTERESTED reply can only
+            # happen via a quick-reply button press (URL-button clicks like
+            # hl_cand_jd_img_v3's "Interested Role" never hit this webhook at
+            # all — they're a client-side navigation, not a message). Any of
+            # the quick-reply-only templates (the old re-reachout set) land
+            # here, so the candidate needs the /apply link texted to them —
+            # otherwise they're left with no way to actually apply.
+            try:
+                await _send_onboarding_link(from_phone, "INTERESTED")
+            except Exception as e:
+                print(f"[flow] onboarding link send failed for {from_phone}: {e}")
             try:
                 await conn.execute(
                     """
@@ -840,14 +843,19 @@ async def _handle_not_looking_for_job(
         return
     cand_id = row["candidate_id"]
 
-    # Move all active mappings to not_interested
+    # Move all still-active mappings to not_interested — but never a mapping
+    # that's already been concluded (client gave real feedback, candidate was
+    # already rejected/declined/placed), since this fires off a single
+    # "not looking for job" reply that may be about a completely different
+    # active match, not these already-decided ones.
     await conn.execute(
         """
         UPDATE client_candidate_mappings
         SET stage = 'not_interested'::mapping_stage, decline_reason = 'not_looking_for_job', updated_at = now()
         WHERE candidate_id = $1
-          AND stage != 'not_interested'::mapping_stage
-          AND stage != 'placed'::mapping_stage
+          AND stage NOT IN ('not_interested', 'placed', 'rejected',
+                             'declined_for_interview', 'client_closed')
+          AND feedback_client IS NULL
         """,
         cand_id,
     )
