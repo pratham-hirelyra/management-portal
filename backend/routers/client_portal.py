@@ -229,6 +229,32 @@ async def build_requirement_workspace(client: dict, conn: asyncpg.Connection) ->
         for r in invited_rows
     ]
 
+    # ── Declined candidates (client rejected pre-interview) ────────────────
+    declined_rows = await conn.fetch(
+        """
+        SELECT
+            ccm.id AS mapping_id, ccm.rejection_reason, ccm.updated_at,
+            c.name AS candidate_name, c.photo_url
+        FROM client_candidate_mappings ccm
+        JOIN candidates c ON c.id = ccm.candidate_id
+        WHERE ccm.client_id = $1
+          AND ccm.stage = 'declined_for_interview'::mapping_stage
+        ORDER BY ccm.updated_at DESC
+        """,
+        client_id,
+    )
+    declined_candidates = [
+        {
+            "mapping_id":        str(r["mapping_id"]),
+            "name":              r["candidate_name"],
+            "initials":          _initials(r["candidate_name"]),
+            "photo_url":         r["photo_url"],
+            "rejection_reason":  r["rejection_reason"],
+            "declined_at":       r["updated_at"].isoformat() if r["updated_at"] else None,
+        }
+        for r in declined_rows
+    ]
+
     # ── Interview Feedback tab (post-interview) ────────────────────────────
     max_salary = float(client.get("max_salary") or 0)
 
@@ -337,6 +363,7 @@ async def build_requirement_workspace(client: dict, conn: asyncpg.Connection) ->
         "activity_events":      activity_events,
         "approval_candidates":  approval_candidates,
         "invited_candidates":   invited_candidates,
+        "declined_candidates":  declined_candidates,
         "feedback_candidates":  feedback_candidates,
     }
 
