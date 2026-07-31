@@ -274,10 +274,16 @@ async def build_requirement_workspace(client: dict, conn: asyncpg.Connection) ->
         JOIN candidates c ON c.id = ccm.candidate_id
         LEFT JOIN mms_scores ms ON ms.candidate_id = c.id AND ms.client_id = ccm.client_id
         WHERE ccm.client_id = $1
-          AND ccm.stage IN ('slot_booked', 'interview_scheduled', 'interview_done',
-                             'join_intent_requested', 'documents_requested', 'offer_sent',
-                             'placed', 'rejected')
-          AND (ccm.stage != 'rejected' OR ccm.interview_done = true OR ccm.interview_slot IS NOT NULL)
+          AND (
+            -- Interview genuinely happened, regardless of what stage a later
+            -- candidate-side automation (WA flow, cron auto-decline, etc.)
+            -- may have since overwritten stage to (e.g. 'not_interested').
+            ccm.interview_done = true
+            OR ccm.stage IN ('slot_booked', 'interview_scheduled',
+                              'join_intent_requested', 'documents_requested',
+                              'offer_sent', 'placed')
+            OR (ccm.stage = 'rejected' AND ccm.interview_slot IS NOT NULL)
+          )
         ORDER BY ccm.interview_slot ASC NULLS LAST
         """,
         client_id,
