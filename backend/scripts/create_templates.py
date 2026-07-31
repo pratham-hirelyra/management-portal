@@ -607,8 +607,24 @@ async def main():
         else:
             print(f"  ✗ [CANDIDATE] hl_cand_jd_share  → {jd_body.get('error', jd_body)}")
 
+        # NOTE: hl_cand_re_r1_v3 / r2_v3 / r3_v3 (the templates actually wired
+        # into routers/cron.py's _REACHOUT_TEMPLATES as of 2026-07-31) are NOT
+        # created here. They're image-header templates matching
+        # hl_cand_jd_img_v3's exact shape (real URL "Interested Role" /
+        # "Not Interested Role" buttons, unlike the quick-reply-only _v2 set
+        # below), which requires uploading an example image via Meta's
+        # resumable upload API (POST /{app_id}/uploads, then POST the file
+        # bytes to get a header_handle) before the template create call — this
+        # script has no media-upload step, so they were submitted with a
+        # one-off script instead. If they ever need recreating, replicate
+        # hl_cand_jd_img_v3's components (see scripts, or query
+        # GET /{waba_id}/message_templates?name=hl_cand_jd_img_v3) with the r1/
+        # r2/r3 intro text from _RE_INTROS in routers/cron.py.
+
         # Re-reachout templates — same 14-param JD body as hl_cand_jd_share,
         # differentiated only by the {{14}} intro text passed at send time.
+        # (Superseded by hl_cand_re_r*_v3 above — kept only so re-running this
+        # script doesn't error on templates that already exist on Meta.)
         re_reachout_templates = [
             (
                 "hl_cand_re_r1_v2",

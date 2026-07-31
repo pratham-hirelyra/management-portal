@@ -118,6 +118,12 @@ async def send_template(
 JD_V3_TEMPLATE = "hl_cand_jd_img_v3"
 _CANDIDATE_PORTAL_URL = os.environ.get("CANDIDATE_PORTAL_URL", os.environ.get("FRONTEND_URL", "http://localhost:5174")).rstrip("/")
 
+# Re-reachout templates that share JD_V3_TEMPLATE's exact body/button shape
+# (submitted 2026-07-31 to replace the old quick-reply-only hl_cand_re_r*_img
+# templates, which have no way to link out at all) — must get the same URL
+# buttons, not the plain quick-reply fallback below.
+_URL_BUTTON_TEMPLATES = {JD_V3_TEMPLATE, "hl_cand_re_r1_v3", "hl_cand_re_r2_v3", "hl_cand_re_r3_v3"}
+
 
 def _jd_v3_apply_url(mapping_id: str) -> str:
     """Job-specific /apply link — ?job_id=<mapping_id> lets the form know which
@@ -220,7 +226,7 @@ async def send_bulk_intent(
                     {"type": "text", "text": c.get("name") or ""},
                     {"type": "text", "text": (c.get("intro") or _default_intro) + (f" 📍 Location: {c['maps_url']}" if c.get("maps_url") else "")},
                 ]
-                if _tmpl_name == JD_V3_TEMPLATE:
+                if _tmpl_name in _URL_BUTTON_TEMPLATES:
                     buttons = [
                         {"type": "button", "sub_type": "url", "index": "0",
                          "parameters": [{"type": "text", "text": _jd_v3_apply_url(mid)}]},

@@ -545,7 +545,11 @@ async def _do_candidate_reachout(conn: asyncpg.Connection, test_mode: bool = Fal
             continue
 
         for row in mappings:
-            send_count = int(row["send_count"])
+            # send_count includes the original outreach send (also logged as
+            # message_type='candidate_intent_ask'), which isn't itself a
+            # re-reachout attempt — subtract it so the first actual
+            # re-reachout indexes into _REACHOUT_TEMPLATES[0], not [1].
+            send_count = max(0, int(row["send_count"]) - 1)
             if send_count >= len(thresholds):
                 skipped += 1
                 continue
@@ -1302,7 +1306,13 @@ _ONBOARDING_THRESHOLDS  = [3, 8, 12]        # hours from last reminder (or onboa
 _AGREEMENT_THRESHOLDS   = [3, 8, 12]        # hours from last reminder (or agreement_sent_at, biz hrs only)
 _SLOT_THRESHOLDS        = [3, 8, 12]        # hours from last reminder (or slot_requested_at)
 _REACHOUT_THRESHOLDS    = [3, 8, 24] # hours from last sent message (candidate JD re-reachout)
-_REACHOUT_TEMPLATES     = ["hl_cand_re_r1_img", "hl_cand_re_r2_img", "hl_cand_re_r3b_img"]
+# hl_cand_re_r{1,2,3}_v3 — submitted to Meta 2026-07-31, PENDING approval as of
+# then. Unlike the old *_img templates (quick-reply only, no link), these
+# have real URL buttons matching hl_cand_jd_img_v3's pattern — see
+# services/msg91_service.py's JD_V3_TEMPLATE handling, which these must be
+# routed through the same way. Sends will fail (alerted, not silent) until
+# Meta approves.
+_REACHOUT_TEMPLATES     = ["hl_cand_re_r1_v3", "hl_cand_re_r2_v3", "hl_cand_re_r3_v3"]
 
 _TEST_THRESHOLDS        = [2, 2, 2]         # minutes (used when test_mode=True, 3-step flows)
 _REACHOUT_TEST_THRESHOLDS = [2, 2, 2]       # minutes (used when test_mode=True, 3-step reachout)
