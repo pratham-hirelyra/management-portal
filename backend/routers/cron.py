@@ -2103,7 +2103,11 @@ async def _followup_interested_form(conn: asyncpg.Connection, test_mode: bool = 
     divisor    = 60 if test_mode else 3600
     thresholds = _INTERESTED_FORM_TEST_THRESHOLDS if test_mode else _INTERESTED_FORM_THRESHOLDS
     now = datetime.now(timezone.utc)
-    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173").strip().rstrip("/")
+    # Candidate-facing link — must be CANDIDATE_PORTAL_URL (the real candidate
+    # portal domain), not FRONTEND_URL (management-portal's own frontend,
+    # which is what candidates would otherwise be sent — unreachable for them
+    # in production since it's a localhost default there).
+    frontend_url = os.environ.get("CANDIDATE_PORTAL_URL", os.environ.get("FRONTEND_URL", "http://localhost:5174")).strip().rstrip("/")
     form_url = f"{frontend_url}/apply"
 
     rows = await conn.fetch(
@@ -2170,7 +2174,9 @@ async def _followup_passive_form(conn: asyncpg.Connection, test_mode: bool = Fal
     divisor    = 60 if test_mode else 3600
     thresholds = _PASSIVE_FORM_TEST_THRESHOLDS if test_mode else _PASSIVE_FORM_THRESHOLDS
     now = datetime.now(timezone.utc)
-    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173").strip().rstrip("/")
+    # Same fix as _followup_interested_form — candidate-facing link must use
+    # CANDIDATE_PORTAL_URL, not FRONTEND_URL (unreachable localhost default).
+    frontend_url = os.environ.get("CANDIDATE_PORTAL_URL", os.environ.get("FRONTEND_URL", "http://localhost:5174")).strip().rstrip("/")
     form_url = f"{frontend_url}/apply?intent=passive"
 
     rows = await conn.fetch(
