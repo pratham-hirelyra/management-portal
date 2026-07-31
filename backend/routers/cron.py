@@ -1349,10 +1349,13 @@ _REACHOUT_THRESHOLDS    = [3, 8, 24] # hours from last sent message (candidate J
 # classifier flagged the urgency-style intro text — "you haven't responded",
 # "filling up fast"); deleted and resubmitted as _v3b with neutral wording
 # once Meta's per-name category-change cooldown made reusing the same name
-# impractical (up to 4 weeks once a name has been APPROVED once). r2_v3 was
-# approved as UTILITY on the first try and was left alone. Sends will fail
+# impractical (up to 4 weeks once a name has been APPROVED once). r2_v3
+# approved as UTILITY on the first try, but was later hand-edited on Meta to
+# use static button URLs instead of the dynamic m.9m.io/{{1}} pattern the
+# other two use — deleted and recreated as r2_v3b with the same dynamic
+# shape for naming/behavior consistency across all three. Sends will fail
 # (alerted, not silent) until each one clears Meta's review.
-_REACHOUT_TEMPLATES     = ["hl_cand_re_r1_v3b", "hl_cand_re_r2_v3", "hl_cand_re_r3_v3b"]
+_REACHOUT_TEMPLATES     = ["hl_cand_re_r1_v3b", "hl_cand_re_r2_v3b", "hl_cand_re_r3_v3b"]
 
 _TEST_THRESHOLDS        = [2, 2, 2]         # minutes (used when test_mode=True, 3-step flows)
 _REACHOUT_TEST_THRESHOLDS = [2, 2, 2]       # minutes (used when test_mode=True, 3-step reachout)
