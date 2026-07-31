@@ -152,6 +152,16 @@ FF_TEMPLATE = "hl_cand_jd_share_5"
 _FF_VIEW_PATH = os.environ.get("CANDIDATE_INTENT_FF_VIEW_URL", f"{_CANDIDATE_PORTAL_URL}/")
 _FF_PROFILE_PATH = os.environ.get("CANDIDATE_INTENT_FF_PROFILE_URL", f"{_CANDIDATE_PORTAL_URL}/?view=profile")
 
+# hl_cand_re_r{1,2,3}_ff — submitted 2026-07-31, PENDING. Dedicated
+# re-reachout sequence for form-filled candidates: same View Details/Update
+# Profile/Not Looking For Job buttons and no header as FF_TEMPLATE, but with
+# an added {{2}} intro variable (6 body params total: name, intro, company,
+# role, salary, area) so repeated re-reachouts don't look like an identical
+# repeat send — mirrors why the non-form-filled path has 3 distinct
+# _REACHOUT_TEMPLATES instead of resending hl_cand_jd_img_v3 itself.
+_FF_REACHOUT_TEMPLATES = {"hl_cand_re_r1_ff", "hl_cand_re_r2_ff", "hl_cand_re_r3_ff"}
+_NO_HEADER_TEMPLATES = {FF_TEMPLATE} | _FF_REACHOUT_TEMPLATES
+
 
 async def send_bulk_intent(
     candidates: list[dict],
@@ -180,16 +190,17 @@ async def send_bulk_intent(
     def _resolve_tmpl(c: dict) -> str:
         return c.get("template_name") or _batch_tmpl_name
 
-    # FF_TEMPLATE never needs a header image; JD_V3_TEMPLATE and the old
-    # default (hl_cand_jd_img) both do — only require image_url if at least
-    # one candidate in this batch actually resolves to one of those.
-    _non_ff_templates = [_resolve_tmpl(c) for c in candidates if _resolve_tmpl(c) != FF_TEMPLATE]
+    # No-header templates (FF_TEMPLATE + its dedicated re-reachout variants)
+    # never need a header image; JD_V3_TEMPLATE and the old default
+    # (hl_cand_jd_img) both do — only require image_url if at least one
+    # candidate in this batch actually resolves to one of those.
+    _non_ff_templates = [_resolve_tmpl(c) for c in candidates if _resolve_tmpl(c) not in _NO_HEADER_TEMPLATES]
     _any_needs_image = bool(_non_ff_templates) and (
         image_url is not None
         or _batch_tmpl_name.endswith(("_img", "_v3"))
         or any(t.endswith(("_img", "_v3")) for t in _non_ff_templates)
     )
-    _img_mode = _any_needs_image or any(_resolve_tmpl(c) == FF_TEMPLATE for c in candidates)
+    _img_mode = _any_needs_image or any(_resolve_tmpl(c) in _NO_HEADER_TEMPLATES for c in candidates)
 
     if _any_needs_image and not image_url:
         raise ValueError("image_url is required for img-variant templates but was not provided")
@@ -209,6 +220,23 @@ async def send_bulk_intent(
                 components = [
                     {"type": "body", "parameters": [
                         {"type": "text", "text": c.get("name") or ""},
+                        {"type": "text", "text": c.get("company_name") or ""},
+                        {"type": "text", "text": c.get("role") or ""},
+                        {"type": "text", "text": c.get("salary") or ""},
+                        {"type": "text", "text": c.get("area") or ""},
+                    ]},
+                    {"type": "button", "sub_type": "url", "index": "0",
+                     "parameters": [{"type": "text", "text": _FF_VIEW_PATH}]},
+                    {"type": "button", "sub_type": "url", "index": "1",
+                     "parameters": [{"type": "text", "text": _FF_PROFILE_PATH}]},
+                    {"type": "button", "sub_type": "quick_reply", "index": "2",
+                     "parameters": [{"type": "payload", "payload": f"NOT_LOOKING_FOR_JOB|{mid}"}]},
+                ]
+            elif _tmpl_name in _FF_REACHOUT_TEMPLATES:
+                components = [
+                    {"type": "body", "parameters": [
+                        {"type": "text", "text": c.get("name") or ""},
+                        {"type": "text", "text": c.get("intro") or _default_intro},
                         {"type": "text", "text": c.get("company_name") or ""},
                         {"type": "text", "text": c.get("role") or ""},
                         {"type": "text", "text": c.get("salary") or ""},

@@ -578,15 +578,17 @@ async def _do_candidate_reachout(conn: asyncpg.Connection, test_mode: bool = Fal
             if row["form_submitted"]:
                 # Already has a portal profile — point them back to their
                 # dashboard, not an /apply form they've already filled out.
-                # Reuses the same hl_cand_jd_share_5 (FF_TEMPLATE) as the
-                # initial send: its body ("This is an update regarding your
-                # recruitment process...") isn't first-send-specific, so no
-                # separate attempt-indexed re-reachout variant is needed here.
-                used_template = msg91.FF_TEMPLATE
+                # Uses the dedicated hl_cand_re_r{1,2,3}_ff sequence (same
+                # View Details/Update Profile/Not Looking buttons as
+                # hl_cand_jd_share_5, no image, but a distinct intro line per
+                # attempt) rather than resending the initial-send template
+                # itself 3 times over.
+                used_template = _FF_REACHOUT_TEMPLATES[next_idx]
                 candidate_entry = {
                     "phone": phone,
                     "mapping_id": str(mapping_id),
                     "name": cand_name,
+                    "intro": _FF_INTROS[next_idx],
                     "company_name": client_dict.get("company_name") or "",
                     "role": client_dict.get("job_title") or "",
                     # Matches routers/matching.py's initial-send formatting exactly
@@ -1356,6 +1358,17 @@ _REACHOUT_THRESHOLDS    = [3, 8, 24] # hours from last sent message (candidate J
 # shape for naming/behavior consistency across all three. Sends will fail
 # (alerted, not silent) until each one clears Meta's review.
 _REACHOUT_TEMPLATES     = ["hl_cand_re_r1_v3b", "hl_cand_re_r2_v3b", "hl_cand_re_r3_v3b"]
+
+# Dedicated re-reachout sequence for form-filled candidates — submitted to
+# Meta 2026-07-31, PENDING. Same View Details/Update Profile/Not Looking
+# buttons as hl_cand_jd_share_5 (no image), but with a distinct intro line
+# per attempt instead of resending the exact same template 3 times.
+_FF_REACHOUT_TEMPLATES  = ["hl_cand_re_r1_ff", "hl_cand_re_r2_ff", "hl_cand_re_r3_ff"]
+_FF_INTROS = [
+    "Following up on this opportunity — here are the details again:",
+    "We're still shortlisting candidates for this role. Here are the details once more:",
+    "Here are the job details once more for your review:",
+]
 
 _TEST_THRESHOLDS        = [2, 2, 2]         # minutes (used when test_mode=True, 3-step flows)
 _REACHOUT_TEST_THRESHOLDS = [2, 2, 2]       # minutes (used when test_mode=True, 3-step reachout)
