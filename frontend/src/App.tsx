@@ -110,7 +110,7 @@ function AppLayout() {
               <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" />
             </svg>
           </button>
-          <span className="text-sm font-semibold text-gray-900">Just Accountants</span>
+          <span className="text-sm font-semibold text-gray-900">Hire Lyra</span>
         </div>
         <main className="flex-1 overflow-y-auto">
           <Routes>
@@ -177,7 +177,7 @@ function Sidebar({ open, onNavigate }: { open: boolean; onNavigate: () => void }
           ${open ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0`}
       >
         <div className="mb-8 px-2 flex items-center justify-between">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest">Just Accountants</p>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest">Hire Lyra</p>
           <button
             onClick={onNavigate}
             aria-label="Close menu"

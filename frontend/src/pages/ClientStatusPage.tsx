@@ -91,10 +91,10 @@ export default function ClientStatusPage() {
         <div className="text-center mb-8">
           <img
             src="https://storage.googleapis.com/hirelyra-website/images/unnamed%20(1).jpg"
-            alt="Just Accountants"
+            alt="Hire Lyra"
             className="w-14 h-14 rounded-xl mx-auto mb-3 object-cover"
           />
-          <p className="text-xs text-gray-400 uppercase tracking-widest">Just Accountants</p>
+          <p className="text-xs text-gray-400 uppercase tracking-widest">Hire Lyra</p>
         </div>
 
         {/* Status card */}
@@ -124,7 +124,7 @@ export default function ClientStatusPage() {
           </div>
         </div>
 
-        <p className="text-center text-xs text-gray-300">Powered by Just Accountants</p>
+        <p className="text-center text-xs text-gray-300">Powered by Hire Lyra</p>
       </div>
     </div>
   )
