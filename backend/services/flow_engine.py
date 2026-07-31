@@ -840,14 +840,19 @@ async def _handle_not_looking_for_job(
         return
     cand_id = row["candidate_id"]
 
-    # Move all active mappings to not_interested
+    # Move all still-active mappings to not_interested — but never a mapping
+    # that's already been concluded (client gave real feedback, candidate was
+    # already rejected/declined/placed), since this fires off a single
+    # "not looking for job" reply that may be about a completely different
+    # active match, not these already-decided ones.
     await conn.execute(
         """
         UPDATE client_candidate_mappings
         SET stage = 'not_interested'::mapping_stage, decline_reason = 'not_looking_for_job', updated_at = now()
         WHERE candidate_id = $1
-          AND stage != 'not_interested'::mapping_stage
-          AND stage != 'placed'::mapping_stage
+          AND stage NOT IN ('not_interested', 'placed', 'rejected',
+                             'declined_for_interview', 'client_closed')
+          AND feedback_client IS NULL
         """,
         cand_id,
     )
