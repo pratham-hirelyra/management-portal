@@ -122,7 +122,7 @@ _CANDIDATE_PORTAL_URL = os.environ.get("CANDIDATE_PORTAL_URL", os.environ.get("F
 # (submitted 2026-07-31 to replace the old quick-reply-only hl_cand_re_r*_img
 # templates, which have no way to link out at all) — must get the same URL
 # buttons, not the plain quick-reply fallback below.
-_URL_BUTTON_TEMPLATES = {JD_V3_TEMPLATE, "hl_cand_re_r1_v3", "hl_cand_re_r2_v3", "hl_cand_re_r3_v3"}
+_URL_BUTTON_TEMPLATES = {JD_V3_TEMPLATE, "hl_cand_re_r1_v3b", "hl_cand_re_r2_v3", "hl_cand_re_r3_v3b"}
 
 
 def _jd_v3_apply_url(mapping_id: str) -> str:

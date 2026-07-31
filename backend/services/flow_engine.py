@@ -639,14 +639,17 @@ async def _handle_interested_response(
                 print(f"[flow] candidate {row['candidate_id']} failed hard filter for client {row['client_id']}: {reason}")
                 await decline_for_filter_mismatch(conn, mapping_id, row["candidate_id"], row["client_id"], from_phone, reason_code)
         else:
-            # form_submitted=false here now only ever comes from hl_cand_jd_img_v3's
-            # Interested Role click (old quick-reply template only ever reaches this
-            # function with form_submitted=true) — the candidate already landed on
-            # /apply directly via the button URL, so no need to text them the link
-            # or send the intro video again. AI-call trigger still fires unchanged
-            # from post_form_submission_flow once they actually submit the form.
-            # interested_form_sent_at is still stamped so the existing reminder cron
-            # (_followup_interested_form) keeps nudging them if they never submit.
+            # form_submitted=false + a real inbound INTERESTED reply can only
+            # happen via a quick-reply button press (URL-button clicks like
+            # hl_cand_jd_img_v3's "Interested Role" never hit this webhook at
+            # all — they're a client-side navigation, not a message). Any of
+            # the quick-reply-only templates (the old re-reachout set) land
+            # here, so the candidate needs the /apply link texted to them —
+            # otherwise they're left with no way to actually apply.
+            try:
+                await _send_onboarding_link(from_phone, "INTERESTED")
+            except Exception as e:
+                print(f"[flow] onboarding link send failed for {from_phone}: {e}")
             try:
                 await conn.execute(
                     """

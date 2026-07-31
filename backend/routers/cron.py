@@ -508,6 +508,7 @@ async def _do_candidate_reachout(conn: asyncpg.Connection, test_mode: bool = Fal
             ccm.wa_sent_at,
             c.phone,
             c.name          AS candidate_name,
+            c.form_submitted,
             (
                 SELECT COUNT(*) FROM whatsapp_messages wm
                 WHERE wm.mapping_id = ccm.id
@@ -571,58 +572,91 @@ async def _do_candidate_reachout(conn: asyncpg.Connection, test_mode: bool = Fal
 
             mapping_id = row["mapping_id"]
             attempt = next_idx + 1  # 1-based attempt number
-
-            re_template = _REACHOUT_TEMPLATES[next_idx]
             cand_name = (row.get("candidate_name") or "").split()[0] if row.get("candidate_name") else ""
+            client_dict = dict(client)
 
-            _RE_INTROS = [
-                "You haven't responded to our earlier message. Here are the job details again:",
-                "We're still shortlisting candidates. Here are the job details one more time:",
-                "This is our final follow-up. Interview slots are filling up fast:",
-            ]
-            jd_components = _build_jd_components(dict(client))
-            candidate_entry = {
-                "phone": phone,
-                "mapping_id": str(mapping_id),
-                "name": cand_name,
-                "intro": _RE_INTROS[next_idx],
-                "maps_url": _client_maps_url(dict(client)),
-            }
-
-            try:
-                from services.jd_card_service import generate_jd_card
-                jd_image_url = client.get("jd_card_url") if isinstance(client, dict) else client["jd_card_url"]
-                if not jd_image_url:
-                    print(f"[cron] jd_card_url missing for re-reachout {mapping_id} — generating now")
+            if row["form_submitted"]:
+                # Already has a portal profile — point them back to their
+                # dashboard, not an /apply form they've already filled out.
+                # Reuses the same hl_cand_jd_share_5 (FF_TEMPLATE) as the
+                # initial send: its body ("This is an update regarding your
+                # recruitment process...") isn't first-send-specific, so no
+                # separate attempt-indexed re-reachout variant is needed here.
+                used_template = msg91.FF_TEMPLATE
+                candidate_entry = {
+                    "phone": phone,
+                    "mapping_id": str(mapping_id),
+                    "name": cand_name,
+                    "company_name": client_dict.get("company_name") or "",
+                    "role": client_dict.get("job_title") or "",
+                    "salary": f"{client_dict['max_salary']:,.0f}" if client_dict.get("max_salary") else "",
+                    "area": client_dict.get("job_location") or "",
+                }
+                try:
+                    await msg91.send_bulk_intent([candidate_entry], {}, template_name=used_template)
+                except Exception as e:
+                    print(f"[cron] candidate re-reachout (form-filled) attempt {attempt} failed for {phone} mapping {mapping_id}: {e}")
                     try:
-                        client_dict = dict(client) if not isinstance(client, dict) else client
-                        jd_image_url = await generate_jd_card(client_dict)
-                        await conn.execute(
-                            "UPDATE clients SET jd_card_url = $1 WHERE id = $2",
-                            jd_image_url, client_dict["id"],
-                        )
-                    except Exception as _img_err:
-                        print(f"[cron] JD card generation failed for re-reachout {mapping_id}: {_img_err}")
-                        jd_image_url = None
-                if not jd_image_url:
-                    print(f"[cron] Skipping re-reachout {mapping_id} — JD card image unavailable")
+                        from services.google_chat_service import send_alert
+                        await send_alert("Candidate re-reachout send failed", str(e), severity="ERROR", context={"phone": phone, "mapping_id": str(mapping_id), "attempt": attempt})
+                    except Exception:
+                        pass
                     skipped += 1
                     continue
-                await msg91.send_bulk_intent(
-                    [candidate_entry],
-                    jd_components,
-                    template_name=re_template,
-                    image_url=jd_image_url,
-                )
-            except Exception as e:
-                print(f"[cron] candidate re-reachout attempt {attempt} failed for {phone} mapping {mapping_id}: {e}")
+            else:
+                used_template = _REACHOUT_TEMPLATES[next_idx]
+
+                # Kept neutral/informational on purpose — Meta's classifier flagged the
+                # original r1/r3 wording ("you haven't responded", "filling up fast")
+                # as MARKETING; must match the wording the hl_cand_re_r*_v3 templates
+                # were actually reviewed and approved as UTILITY with.
+                _RE_INTROS = [
+                    "Sharing the job details again for your review:",
+                    "We're still shortlisting candidates. Here are the job details one more time:",
+                    "Here are the job details once more for your review:",
+                ]
+                jd_components = _build_jd_components(client_dict)
+                candidate_entry = {
+                    "phone": phone,
+                    "mapping_id": str(mapping_id),
+                    "name": cand_name,
+                    "intro": _RE_INTROS[next_idx],
+                    "maps_url": _client_maps_url(client_dict),
+                }
+
                 try:
-                    from services.google_chat_service import send_alert
-                    await send_alert("Candidate re-reachout send failed", str(e), severity="ERROR", context={"phone": phone, "mapping_id": str(mapping_id), "attempt": attempt})
-                except Exception:
-                    pass
-                skipped += 1
-                continue
+                    from services.jd_card_service import generate_jd_card
+                    jd_image_url = client_dict.get("jd_card_url")
+                    if not jd_image_url:
+                        print(f"[cron] jd_card_url missing for re-reachout {mapping_id} — generating now")
+                        try:
+                            jd_image_url = await generate_jd_card(client_dict)
+                            await conn.execute(
+                                "UPDATE clients SET jd_card_url = $1 WHERE id = $2",
+                                jd_image_url, client_dict["id"],
+                            )
+                        except Exception as _img_err:
+                            print(f"[cron] JD card generation failed for re-reachout {mapping_id}: {_img_err}")
+                            jd_image_url = None
+                    if not jd_image_url:
+                        print(f"[cron] Skipping re-reachout {mapping_id} — JD card image unavailable")
+                        skipped += 1
+                        continue
+                    await msg91.send_bulk_intent(
+                        [candidate_entry],
+                        jd_components,
+                        template_name=used_template,
+                        image_url=jd_image_url,
+                    )
+                except Exception as e:
+                    print(f"[cron] candidate re-reachout attempt {attempt} failed for {phone} mapping {mapping_id}: {e}")
+                    try:
+                        from services.google_chat_service import send_alert
+                        await send_alert("Candidate re-reachout send failed", str(e), severity="ERROR", context={"phone": phone, "mapping_id": str(mapping_id), "attempt": attempt})
+                    except Exception:
+                        pass
+                    skipped += 1
+                    continue
 
             await conn.execute(
                 """
@@ -630,9 +664,9 @@ async def _do_candidate_reachout(conn: asyncpg.Connection, test_mode: bool = Fal
                     (candidate_id, mapping_id, message_type, direction, phone, status, sent_at, used_template_name)
                 VALUES ($1, $2, 'candidate_intent_ask', 'outbound', $3, 'sent', now(), $4)
                 """,
-                row["candidate_id"], mapping_id, phone, re_template,
+                row["candidate_id"], mapping_id, phone, used_template,
             )
-            print(f"[cron] re-reachout attempt {attempt} sent to {phone} mapping {mapping_id} ({elapsed_hours:.1f}h since last send)")
+            print(f"[cron] re-reachout attempt {attempt} ({used_template}) sent to {phone} mapping {mapping_id} ({elapsed_hours:.1f}h since last send)")
             sent += 1
 
     return sent, skipped
@@ -1306,13 +1340,17 @@ _ONBOARDING_THRESHOLDS  = [3, 8, 12]        # hours from last reminder (or onboa
 _AGREEMENT_THRESHOLDS   = [3, 8, 12]        # hours from last reminder (or agreement_sent_at, biz hrs only)
 _SLOT_THRESHOLDS        = [3, 8, 12]        # hours from last reminder (or slot_requested_at)
 _REACHOUT_THRESHOLDS    = [3, 8, 24] # hours from last sent message (candidate JD re-reachout)
-# hl_cand_re_r{1,2,3}_v3 — submitted to Meta 2026-07-31, PENDING approval as of
-# then. Unlike the old *_img templates (quick-reply only, no link), these
-# have real URL buttons matching hl_cand_jd_img_v3's pattern — see
-# services/msg91_service.py's JD_V3_TEMPLATE handling, which these must be
-# routed through the same way. Sends will fail (alerted, not silent) until
-# Meta approves.
-_REACHOUT_TEMPLATES     = ["hl_cand_re_r1_v3", "hl_cand_re_r2_v3", "hl_cand_re_r3_v3"]
+# Submitted to Meta 2026-07-31. Unlike the old *_img templates (quick-reply
+# only, no link), these have real URL buttons matching hl_cand_jd_img_v3's
+# pattern — see services/msg91_service.py's _URL_BUTTON_TEMPLATES routing.
+# hl_cand_re_r1_v3/r3_v3 first came back auto-categorized MARKETING (Meta's
+# classifier flagged the urgency-style intro text — "you haven't responded",
+# "filling up fast"); deleted and resubmitted as _v3b with neutral wording
+# once Meta's per-name category-change cooldown made reusing the same name
+# impractical (up to 4 weeks once a name has been APPROVED once). r2_v3 was
+# approved as UTILITY on the first try and was left alone. Sends will fail
+# (alerted, not silent) until each one clears Meta's review.
+_REACHOUT_TEMPLATES     = ["hl_cand_re_r1_v3b", "hl_cand_re_r2_v3", "hl_cand_re_r3_v3b"]
 
 _TEST_THRESHOLDS        = [2, 2, 2]         # minutes (used when test_mode=True, 3-step flows)
 _REACHOUT_TEST_THRESHOLDS = [2, 2, 2]       # minutes (used when test_mode=True, 3-step reachout)
