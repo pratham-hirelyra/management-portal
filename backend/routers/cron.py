@@ -589,8 +589,10 @@ async def _do_candidate_reachout(conn: asyncpg.Connection, test_mode: bool = Fal
                     "name": cand_name,
                     "company_name": client_dict.get("company_name") or "",
                     "role": client_dict.get("job_title") or "",
-                    "salary": f"{client_dict['max_salary']:,.0f}" if client_dict.get("max_salary") else "",
-                    "area": client_dict.get("job_location") or "",
+                    # Matches routers/matching.py's initial-send formatting exactly
+                    # (no comma grouping, job_location falling back to location).
+                    "salary": str(int(client_dict["max_salary"])) if client_dict.get("max_salary") else "",
+                    "area": client_dict.get("job_location") or client_dict.get("location") or "",
                 }
                 try:
                     await msg91.send_bulk_intent([candidate_entry], {}, template_name=used_template)

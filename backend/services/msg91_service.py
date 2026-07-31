@@ -140,8 +140,8 @@ def _jd_v3_p_apply_url(mapping_id: str) -> str:
 
 # hl_cand_jd_share_5 — sent to candidates who've already filled the form
 # (supersedes hl_cand_jd_share_2 — same buttons, body gained a Role field).
-# STATUS ON META: PENDING as of 2026-07-29 — sends will fail until approved.
-# No header image, 5 body vars (name, company_name, job_title/role,
+# APPROVED (UTILITY) as of 2026-07-31 — verified live against Meta's Graph
+# API. No header image, 5 body vars (name, company_name, job_title/role,
 # salary-upto, area/location — positional {{1}}/{{2}}/{{3}}/{{4}}/{{5}}).
 # 3 buttons: View Details (URL, dynamic, m.9m.io/{{1}} pattern) straight into
 # the portal dashboard (not job-specific — candidate reviews all their
