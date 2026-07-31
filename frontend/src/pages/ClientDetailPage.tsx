@@ -688,7 +688,13 @@ export default function ClientDetailPage() {
             <p className="text-xs font-medium text-gray-500 mb-2">Phone Numbers</p>
             {client.phone_numbers && client.phone_numbers.length > 0 ? (
               <div className="space-y-1.5">
-                {client.phone_numbers.map((p, i) => (
+                {client.phone_numbers.map((raw, i) => {
+                  // Older/scraped rows store phone_numbers as a plain string
+                  // array (["98...", "99..."]) rather than the newer
+                  // {source, number, agreed} object shape — normalize so the
+                  // number always renders instead of silently coming up blank.
+                  const p = typeof raw === 'string' ? { source: 'Unknown', number: raw } : raw
+                  return (
                   <div key={i} className="flex items-center gap-2">
                     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
                       p.source === 'Google'    ? 'bg-blue-50 text-blue-700' :
@@ -711,7 +717,8 @@ export default function ClientDetailPage() {
                       </button>
                     )}
                   </div>
-                ))}
+                  )
+                })}
               </div>
             ) : (
               <div className="flex items-center gap-3">

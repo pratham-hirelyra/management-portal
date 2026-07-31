@@ -77,14 +77,14 @@ async def list_mappings(
                (
                    SELECT COUNT(*) FROM client_candidate_mappings m2
                    WHERE m2.candidate_id = ccm.candidate_id
-                     AND m2.stage::text NOT IN ('placed','rejected','not_interested','declined_for_interview','waitlisted')
+                     AND m2.stage::text NOT IN ('placed','rejected','rejected_by_client','not_interested','declined_for_interview','waitlisted','client_closed')
                ) AS active_mapping_count,
                (
                    SELECT string_agg(cl2.company_name, ', ' ORDER BY m2.created_at DESC)
                    FROM client_candidate_mappings m2
                    JOIN clients cl2 ON cl2.id = m2.client_id
                    WHERE m2.candidate_id = ccm.candidate_id
-                     AND m2.stage::text NOT IN ('placed','rejected','not_interested','declined_for_interview','waitlisted')
+                     AND m2.stage::text NOT IN ('placed','rejected','rejected_by_client','not_interested','declined_for_interview','waitlisted','client_closed')
                ) AS active_mapping_clients,
                EXISTS (
                    SELECT 1 FROM candidate_locks cl

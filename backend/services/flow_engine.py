@@ -115,43 +115,98 @@ async def _send_onboarding_link(phone: str, intent: str = "INTERESTED") -> None:
             pass
 
 
+_AI_CALL_DEDUP_WINDOW_MIN = 15  # RinggAI schedules at +5min with up to ~2min of its own retries
+
+
 async def _trigger_ai_call_with_notify(
     conn, mapping_id, cand_id, from_phone: str, cand_name: str
 ) -> None:
-    """Trigger RinggAI call and send the AI interview notification WA."""
+    """Trigger RinggAI call and send the AI interview notification WA.
+
+    Guards against double-triggering: /apply submission always fires this now
+    (see routers/candidates.py:_process_apply), and tapping Interested on a
+    JD moments later can also reach here via post_form_submission_flow — both
+    used to fire a separate real RinggAI call within the same minute. Skips
+    the actual RinggAI call when one was triggered recently and hasn't
+    resolved to an evaluation yet — the WhatsApp notify message still sends
+    either way (harmless to repeat; the call it refers to is already coming).
+
+    Also resets call_drop_retry_count / drop_final_sent / call_status on every
+    real trigger — these are candidate-level fields, not mapping-level, so
+    without a reset a candidate whose retries exhausted on one mapping would
+    have routers/cron.py:_retry_dropped_calls treat a brand new call for a
+    later, different mapping as already-exhausted too, skipping its retry
+    cycle entirely."""
     import services.msg91_service as msg91
     import services.ringg_service as ringg
     import os
+    from datetime import datetime, timezone as _tz
+
+    _conn = conn
+    _pool = None
+    if _conn is None:
+        from database import get_pool
+        _pool = get_pool()
+        _conn = await _pool.acquire()
+    should_trigger_call = True
     try:
-        await ringg.trigger_ai_call(cand_id, from_phone, cand_name)
-    except Exception as e:
-        print(f"[flow] RinggAI trigger failed for {from_phone}: {e}")
+        existing = await _conn.fetchrow(
+            "SELECT ai_call_triggered_at, evaluation_status FROM candidates WHERE id = $1",
+            cand_id,
+        )
+        if existing and existing["ai_call_triggered_at"] and not existing["evaluation_status"]:
+            elapsed_min = (datetime.now(_tz.utc) - existing["ai_call_triggered_at"]).total_seconds() / 60
+            if elapsed_min < _AI_CALL_DEDUP_WINDOW_MIN:
+                print(f"[flow] AI call already triggered {elapsed_min:.1f}m ago for {cand_id} — skipping duplicate RinggAI trigger, still sending notify WA")
+                should_trigger_call = False
+        if should_trigger_call:
+            await _conn.execute(
+                """
+                UPDATE candidates
+                SET ai_call_triggered_at = now(),
+                    call_drop_retry_count = 0,
+                    drop_final_sent = false,
+                    call_status = NULL,
+                    last_call_drop_retry_at = NULL
+                WHERE id = $1
+                """,
+                cand_id,
+            )
+    finally:
+        if _pool is not None:
+            await _pool.release(_conn)
+
+    if should_trigger_call:
         try:
-            from services.google_chat_service import send_alert
-            await send_alert("RinggAI trigger failed", str(e), severity="ERROR", context={"phone": from_phone, "cand_id": str(cand_id)})
-        except Exception:
-            pass
-        try:
-            _conn = conn
-            if _conn is None:
-                from database import get_pool
-                async with get_pool().acquire() as _conn:
+            await ringg.trigger_ai_call(cand_id, from_phone, cand_name)
+        except Exception as e:
+            print(f"[flow] RinggAI trigger failed for {from_phone}: {e}")
+            try:
+                from services.google_chat_service import send_alert
+                await send_alert("RinggAI trigger failed", str(e), severity="ERROR", context={"phone": from_phone, "cand_id": str(cand_id)})
+            except Exception:
+                pass
+            try:
+                _conn = conn
+                if _conn is None:
+                    from database import get_pool
+                    async with get_pool().acquire() as _conn:
+                        await _conn.execute(
+                            "UPDATE candidates SET call_status = 'DROPPED', updated_at = now() WHERE id = $1",
+                            cand_id,
+                        )
+                else:
                     await _conn.execute(
                         "UPDATE candidates SET call_status = 'DROPPED', updated_at = now() WHERE id = $1",
                         cand_id,
                     )
-            else:
-                await _conn.execute(
-                    "UPDATE candidates SET call_status = 'DROPPED', updated_at = now() WHERE id = $1",
-                    cand_id,
-                )
-        except Exception as db_e:
-            print(f"[flow] failed to mark DROPPED for {from_phone}: {db_e}")
-            try:
-                from services.google_chat_service import send_alert
-                await send_alert("Failed to mark candidate DROPPED", str(db_e), severity="ERROR", context={"phone": from_phone, "cand_id": str(cand_id)})
-            except Exception:
-                pass
+            except Exception as db_e:
+                print(f"[flow] failed to mark DROPPED for {from_phone}: {db_e}")
+                try:
+                    from services.google_chat_service import send_alert
+                    await send_alert("Failed to mark candidate DROPPED", str(db_e), severity="ERROR", context={"phone": from_phone, "cand_id": str(cand_id)})
+                except Exception:
+                    pass
 
     ai_notify_template = os.environ.get("CANDIDATE_AI_INTERVIEW_TEMPLATE", "").strip()
     sent = False
@@ -218,13 +273,165 @@ async def _check_hard_filters(conn: asyncpg.Connection, client_id, candidate_id)
     return False, reason_code, reason
 
 
+async def _check_hard_filters_all(conn: asyncpg.Connection, client_id, candidate_id) -> list[tuple[str, str, str]]:
+    """Like _check_hard_filters, but doesn't stop at the first failing check —
+    filter_candidates() short-circuits per candidate (by design, for the
+    matching pipeline's normal pass/fail use), so it only ever surfaces one
+    reason. This runs every active hard filter independently and returns ALL
+    mismatches as (reason_code, internal_reason, candidate_facing_requirement)
+    tuples — used for the candidate-facing job-specific-link popup
+    (routers/candidates.py: apply_candidate), where showing every real
+    mismatch AND what the client actually needs (so the candidate knows what
+    to correct, rather than a blank "doesn't match") is more useful than the
+    single generic phrase _safe_decline_reason_phrase produces for the
+    post-AI-call WhatsApp decline message.
+
+    Unlike that WhatsApp path, this deliberately DOES disclose the actual
+    salary/distance/requirement numbers — this is a same-session, immediate,
+    self-service popup the candidate can act on right away, not a stored
+    message, so the stricter no-numbers rule for _safe_decline_reason_phrase
+    doesn't apply here. Gender/religion still are never disclosed beyond the
+    plain requirement label itself (no candidate comparison stated).
+
+    Mirrors filter_candidates' active filters exactly (role alignment,
+    employment type, salary, travel radius, gender) — work-zone and CA-firm
+    preference are commented out there too, so they're skipped here as well
+    for consistency. Religion is never checked here either, same as
+    _check_hard_filters (see its docstring)."""
+    from services.filter_service import _is_senior_jd, salary_ceiling, salary_floor, distance_km
+
+    client = await conn.fetchrow("SELECT * FROM clients WHERE id = $1", client_id)
+    candidate = await conn.fetchrow("SELECT * FROM candidates WHERE id = $1", candidate_id)
+    if not client or not candidate:
+        return []
+
+    c = dict(candidate)
+    cl = dict(client)
+    mismatches: list[tuple[str, str, str]] = []
+
+    if _is_senior_jd(cl.get("job_title")) and (c.get("category") or "").strip() == "Junior Accountant":
+        mismatches.append((
+            "hard_filter_mismatch",
+            "Role mismatch: Senior Accountant JD excludes DEO/Junior candidates",
+            "This role requires Senior Accountant-level experience.",
+        ))
+
+    if (cl.get("job_type") or "").lower() == "full time" and (c.get("job_type") or "").lower() == "part time":
+        mismatches.append((
+            "hard_filter_mismatch",
+            "Employment type: JD is Full Time, candidate wants Part Time only",
+            "This role is Full-Time only.",
+        ))
+
+    salary_cap = salary_ceiling(cl.get("max_salary"))
+    salary_floor_ = salary_floor(cl.get("min_salary"))
+    cand_salary = c.get("current_salary")
+    if cand_salary:
+        cand_sal_f = float(cand_salary)
+        if salary_cap and cand_sal_f > salary_cap:
+            mismatches.append((
+                "salary_mismatch",
+                f"Salary ceiling: candidate salary {cand_salary} > cap {salary_cap:.0f}",
+                f"This role's budget is up to ₹{salary_cap:,.0f}/month.",
+            ))
+        elif salary_floor_ and cand_sal_f < salary_floor_:
+            mismatches.append((
+                "salary_mismatch",
+                f"Salary floor: candidate salary {cand_salary} < floor {salary_floor_:.0f}",
+                f"This role expects a current salary of at least around ₹{salary_floor_:,.0f}/month.",
+            ))
+
+    # Travel radius — silently skipped (not a real mismatch) if either side
+    # isn't geocoded yet, same exemption _check_hard_filters applies.
+    if cl.get("location_lat") and cl.get("location_lng") and c.get("location_lat") and c.get("location_lng"):
+        try:
+            actual_km = distance_km(c, cl)
+            client_radius = cl.get("travel_radius")
+            if client_radius is not None and actual_km > float(client_radius):
+                mismatches.append((
+                    "hard_filter_mismatch",
+                    f"Client radius: {actual_km:.1f} km > client limit {client_radius} km",
+                    f"This role only considers candidates within {float(client_radius):.0f} km of the job location "
+                    f"— it's about {actual_km:.0f} km from where you entered.",
+                ))
+            else:
+                working_radius = c.get("working_radius")
+                if working_radius is not None:
+                    default_radius = float(working_radius)
+                elif cl.get("travel_radius") is not None:
+                    default_radius = float(cl["travel_radius"])
+                else:
+                    default_radius = 5.0
+                limit_km = default_radius + 2.0
+                if actual_km > limit_km:
+                    mismatches.append((
+                        "hard_filter_mismatch",
+                        f"Travel radius: {actual_km:.1f} km > limit {limit_km:.0f} km",
+                        f"The job location is about {actual_km:.0f} km from where you entered — "
+                        f"you mentioned a travel distance of {default_radius:.0f} km.",
+                    ))
+        except (TypeError, ValueError):
+            pass
+
+    gender_req = (cl.get("gender_requirements") or "").strip().lower()
+    if gender_req and gender_req != "any":
+        cand_gender = (c.get("gender") or "").strip().lower()
+        if cand_gender != gender_req:
+            mismatches.append((
+                "hard_filter_mismatch",
+                f"Gender requirement: client requires {cl.get('gender_requirements')}, candidate is {c.get('gender') or 'unspecified'}",
+                f"This role requires candidates who are {cl.get('gender_requirements')}.",
+            ))
+
+    return mismatches
+
+
+def _safe_decline_reason_phrase(reason: str | None) -> str:
+    """Translate an internal filter_service.py rejection reason into a short,
+    generic, candidate-safe phrase. The raw reason strings include religion-
+    and gender-based rejection language and exact internal salary/budget
+    numbers (see services/filter_service.py) — none of that may ever be sent
+    to a candidate verbatim. Religion/gender specifically always fall through
+    to the fully generic default; only salary/travel/role/employment-type get
+    a (still non-specific) category-level phrase."""
+    r = (reason or "").strip().lower()
+    if r.startswith("salary"):
+        return "the salary expectations for this role"
+    if r.startswith("travel radius") or r.startswith("client radius"):
+        return "the distance between your location and the job location"
+    if r.startswith("role mismatch"):
+        return "the experience level required for this role"
+    if r.startswith("employment type"):
+        return "the employment type (full-time/part-time) required for this role"
+    # Religion, gender, and anything unrecognised — never echo the specific criterion.
+    return "this role's specific requirements"
+
+
 async def decline_for_filter_mismatch(
     conn: asyncpg.Connection, mapping_id: uuid.UUID, candidate_id, client_id, phone: str,
     reason_code: str = "hard_filter_mismatch",
+    human_reason: str | None = None,
+    notify: bool = True,
 ) -> None:
     """Candidate fails a hard filter (salary, travel radius, gender, etc.) for this client —
     decline this mapping, free the candidate's lock, and send a polite ack.
-    No AI call is triggered."""
+    No AI call is triggered.
+
+    human_reason, when passed (post-AI-call path — see _apply_evaluation_result
+    in routers/ringg.py), is the RAW internal reason from filter_service.py —
+    it gets translated through _safe_decline_reason_phrase before ever reaching
+    a candidate-facing message; the raw string itself is never sent. The
+    resulting phrase goes out via CANDIDATE_NOT_FIT_CLIENT_REASON_TEMPLATE, a
+    template pending approval — until it's configured this logs and skips the
+    send rather than silently falling back to the reason-less
+    CANDIDATE_NOT_FIT_CLIENT_TEMPLATE below, since that would drop the "must
+    mention the reason" requirement without anyone noticing.
+
+    notify=False skips the WhatsApp message entirely (mapping decline + lock
+    release still happen) — used by the portal's "Continue Anyway" path
+    (candidate_portal.py:respond_to_job), which already shows this exact
+    outcome on-screen the moment the candidate taps it, so the WA message
+    would just be a redundant duplicate of what they're already looking at."""
     import services.msg91_service as msg91
 
     await conn.execute(
@@ -245,10 +452,30 @@ async def decline_for_filter_mismatch(
     )
     print(f"[flow] candidate {candidate_id} failed hard filter ({reason_code}) for client {client_id} — declined, no AI call")
 
+    if not notify:
+        return
+
     cand = await conn.fetchrow("SELECT name FROM candidates WHERE id = $1", candidate_id)
     client = await conn.fetchrow("SELECT company_name FROM clients WHERE id = $1", client_id)
     candidate_name = (cand["name"] if cand else "") or ""
     company_name = (client["company_name"] if client else "") or "this client"
+
+    if human_reason is not None:
+        template = os.environ.get("CANDIDATE_NOT_FIT_CLIENT_REASON_TEMPLATE", "").strip()
+        if not template:
+            print(f"[flow] CANDIDATE_NOT_FIT_CLIENT_REASON_TEMPLATE not configured — skipping not-fit-with-reason message for {phone} (pending template approval)")
+            return
+        safe_reason = _safe_decline_reason_phrase(human_reason)
+        try:
+            components = [{"type": "body", "parameters": [
+                {"type": "text", "text": candidate_name},
+                {"type": "text", "text": company_name},
+                {"type": "text", "text": safe_reason},
+            ]}]
+            await msg91.send_template(phone, template, "en", components, sender="candidate")
+        except Exception as e:
+            print(f"[flow] not-fit-with-reason template failed for {phone}: {e}")
+        return
 
     # Don't reuse CANDIDATE_EVALUATION_FAIL_TEMPLATE — its copy says "Thank you for
     # taking our test!", which is wrong here since no AI evaluation ever ran.
@@ -298,6 +525,25 @@ async def _handle_interested_response(
     if not row:
         return
 
+    from routers.matching import _load_client
+    client = await _load_client(row["client_id"], conn)
+    if client.get("stage") in ("churned", "disqualified"):
+        await conn.execute(
+            """
+            UPDATE client_candidate_mappings
+            SET stage = 'rejected'::mapping_stage, rejection_reason = 'client_churned', updated_at = now()
+            WHERE id = $1
+            """,
+            mapping_id,
+        )
+        await msg91.send_text(
+            from_phone,
+            "Thanks for your interest! This position has been closed. We'll keep your profile active "
+            "and reach out as soon as a new matching opportunity comes up. 🙏",
+            sender="candidate",
+        )
+        return
+
     eval_status = row["evaluation_status"]
 
     if eval_status and eval_status.lower() in ("pass", "passed"):
@@ -326,6 +572,10 @@ async def _handle_interested_response(
             mapping_id, row["candidate_id"], from_phone,
             row["name"] or "", client, conn,
         )
+        try:
+            await notify_client_pending_review(row["client_id"], row["name"] or "A candidate", conn)
+        except Exception as e:
+            print(f"[flow] client pending-review notify error for mapping {mapping_id}: {e}")
 
     elif eval_status and eval_status.lower() in ("fail", "failed", "reject"):
         await conn.execute(
@@ -389,16 +639,15 @@ async def _handle_interested_response(
                 print(f"[flow] candidate {row['candidate_id']} failed hard filter for client {row['client_id']}: {reason}")
                 await decline_for_filter_mismatch(conn, mapping_id, row["candidate_id"], row["client_id"], from_phone, reason_code)
         else:
-            import os
-            frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173").strip().rstrip("/")
-            form_url = f"{frontend_url}/apply"
-            first_name = (row["name"] or "").split()[0] if row["name"] else "there"
+            # form_submitted=false here now only ever comes from hl_cand_jd_img_v3's
+            # Interested Role click (old quick-reply template only ever reaches this
+            # function with form_submitted=true) — the candidate already landed on
+            # /apply directly via the button URL, so no need to text them the link
+            # or send the intro video again. AI-call trigger still fires unchanged
+            # from post_form_submission_flow once they actually submit the form.
+            # interested_form_sent_at is still stamped so the existing reminder cron
+            # (_followup_interested_form) keeps nudging them if they never submit.
             try:
-                await msg91.send_text(
-                    from_phone,
-                    f"Hi,\n\nThanks for your interest in this role!\n\nTo move forward, please fill out this short form with your basic details.\n\n🔗 {form_url}\n\nAbhishek Shah\nJustAccountants",
-                    sender="candidate",
-                )
                 await conn.execute(
                     """
                     UPDATE client_candidate_mappings
@@ -408,14 +657,7 @@ async def _handle_interested_response(
                     mapping_id,
                 )
             except Exception as e:
-                print(f"[flow] interested form link failed for {from_phone}: {e}")
-                try:
-                    from services.google_chat_service import send_alert
-                    await send_alert("Interested form link send failed", str(e), severity="ERROR", context={"phone": from_phone, "mapping_id": str(mapping_id)})
-                except Exception:
-                    pass
-            await asyncio.sleep(10)
-            await _send_intro_video(from_phone)
+                print(f"[flow] interested_form_sent_at stamp failed for {from_phone}: {e}")
 
 
 async def _handle_not_interested_role_response(
@@ -507,17 +749,25 @@ async def _handle_not_interested_role_response(
                 except Exception:
                     pass
         else:
+            # form_submitted=false here now only ever comes from hl_cand_jd_img_v3's
+            # Not Interested Role click — the candidate already landed on /p-apply
+            # directly via the button URL, so no need to text them the link or send
+            # the intro video again (mirrors _handle_interested_response above).
+            # Reuses interested_form_sent_at (same field as the Interested path) so
+            # the existing reminder cron (_followup_interested_form) also nudges
+            # these candidates if they never submit — see its broadened stage
+            # filter in routers/cron.py.
             try:
-                await _send_onboarding_link(from_phone, "NOT_INTERESTED_ROLE")
+                await conn.execute(
+                    """
+                    UPDATE client_candidate_mappings
+                    SET interested_form_sent_at = now(), updated_at = now()
+                    WHERE id = $1
+                    """,
+                    mapping_id,
+                )
             except Exception as e:
-                print(f"[flow] not_interested_role form link failed: {e}")
-                try:
-                    from services.google_chat_service import send_alert
-                    await send_alert("Not-interested-role form link send failed", str(e), severity="ERROR", context={"phone": from_phone})
-                except Exception:
-                    pass
-            await asyncio.sleep(10)
-            await _send_intro_video(from_phone)
+                print(f"[flow] interested_form_sent_at stamp (not_interested_role) failed for {from_phone}: {e}")
 
 
 async def post_form_submission_flow(
@@ -612,13 +862,10 @@ async def _handle_not_looking_for_job(
         cand_id,
     )
 
-    # Mark candidate as not looking — 120-day DND, auto re-engages after 4 months
+    # Mark candidate as not looking — 180-day DND, auto re-engages after 6 months.
+    # They can still come to us inbound in the meantime if they want a job sooner.
     await conn.execute(
-        "UPDATE candidates SET is_active = false, dnd_until = now() + interval '120 days', updated_at = now() WHERE id = $1",
-        cand_id,
-    )
-    await conn.execute(
-        "UPDATE candidates SET is_active = false, dnd_until = now() + interval '120 days', updated_at = now() WHERE id = $1",
+        "UPDATE candidates SET is_active = false, dnd_until = now() + interval '180 days', updated_at = now() WHERE id = $1",
         cand_id,
     )
 
@@ -906,15 +1153,14 @@ async def execute_candidate_flow(
             except Exception:
                 pass
 
-    if step.next_stage == "interested":
-        try:
-            client_row = await conn.fetchrow(
-                "SELECT client_id FROM client_candidate_mappings WHERE id = $1", mapping_id
-            )
-            if client_row:
-                await notify_client_pending_review(client_row["client_id"], conn)
-        except Exception as e:
-            print(f"[flow] client pending-review notify error for mapping {mapping_id}: {e}")
+    # notify_client_pending_review is called directly from the three places a
+    # mapping actually enters client_approval_pending (this function's own
+    # pre-evaluated-pass branch above, routers/ringg.py's post-AI-call pass
+    # branch, and routers/matching.py:on_evaluation_complete) — NOT here.
+    # This used to fire on every "interested" transition regardless of
+    # whether *this* candidate had been evaluated yet, re-sending a stale
+    # "N candidates pending review" count keyed off unrelated candidates
+    # already sitting in the queue.
 
     return True
 
@@ -935,45 +1181,36 @@ def client_portal_deep_link(client_id: uuid.UUID, tab: str = "overview") -> str:
     return f"requirement/{client_id}/{tab}"
 
 
-async def notify_client_pending_review(client_id: uuid.UUID, conn: asyncpg.Connection) -> None:
+async def notify_client_pending_review(client_id: uuid.UUID, candidate_name: str, conn: asyncpg.Connection) -> None:
     """Ping the client's POC on WhatsApp when a fresh 'interested' reply comes in,
-    telling them how many candidates are currently awaiting their review, with a
-    link into the client portal. Skips silently if there's nothing pending yet
-    (this candidate still needs to pass evaluation before landing in review)."""
+    naming the candidate who just landed in client_approval_pending, with a
+    link into the client portal."""
     try:
         client = await conn.fetchrow(
-            "SELECT poc_name, poc_phone, job_title FROM clients WHERE id = $1", client_id
+            "SELECT poc_name, poc_phone, job_title, stage FROM clients WHERE id = $1", client_id
         )
         if not client or not client["poc_phone"]:
             return
-
-        pending = await conn.fetchval(
-            """
-            SELECT COUNT(*) FROM client_candidate_mappings
-            WHERE client_id = $1 AND stage = 'client_approval_pending'::mapping_stage
-            """,
-            client_id,
-        ) or 0
-        if pending < 1:
+        if client["stage"] != "onboarded":
             return
 
         portal_url = os.environ.get("CLIENT_PORTAL_URL", "https://employer.justaccountants.in").rstrip("/")
         poc_name = client["poc_name"] or "there"
         role = client["job_title"] or "your role"
-        plural = "s" if pending != 1 else ""
-        verb = "are" if pending != 1 else "is"
 
         import services.msg91_service as msg91
         # hl_client_pending_review_v4 (UTILITY, business-initiated — see feedback memory
-        # on the template rule): body takes name/count/role; the portal link is a
-        # dynamic URL button (client_portal_deep_link) that opens Candidate Review
-        # directly for this requirement, not just the portal root.
+        # on the template rule): body takes poc_name/candidate_name/role; the portal
+        # link is a dynamic URL button (client_portal_deep_link) that opens Candidate
+        # Review directly for this requirement, not just the portal root. For the
+        # count-based backlog reminder (multiple accumulated candidates), see
+        # _followup_review_pending in cron.py, which uses a separate template.
         template = os.environ.get("CLIENT_PENDING_REVIEW_TEMPLATE", "hl_client_pending_review_v4").strip()
         if template:
             components = [
                 {"type": "body", "parameters": [
                     {"type": "text", "text": poc_name},
-                    {"type": "text", "text": str(pending)},
+                    {"type": "text", "text": candidate_name},
                     {"type": "text", "text": role},
                 ]},
                 {"type": "button", "sub_type": "url", "index": "0", "parameters": [
@@ -984,10 +1221,17 @@ async def notify_client_pending_review(client_id: uuid.UUID, conn: asyncpg.Conne
         else:
             await msg91.send_text(
                 client["poc_phone"],
-                f"Hi {poc_name}, {pending} candidate{plural} for {role} {verb} pending your review.\n\n"
+                f"Hi {poc_name}, candidate {candidate_name} for {role} is pending your review.\n\n"
                 f"Review now: {portal_url}/{client_portal_deep_link(client_id, 'review')}",
                 sender="client",
             )
+        # Stamps the same cadence gate _followup_review_pending (cron.py) reads,
+        # so that reminder correctly waits 2h from this reactive send instead of
+        # potentially firing right on top of it.
+        await conn.execute(
+            "UPDATE clients SET last_review_reminder_at = now() WHERE id = $1",
+            client_id,
+        )
     except Exception as e:
         print(f"[notify_client_pending_review] failed for {client_id}: {e}")
 

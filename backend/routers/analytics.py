@@ -44,6 +44,7 @@ def _heat(segment: Optional[str], source: Optional[str]) -> str:
 async def wf1_leads(
     period: str = Query("day", pattern="^(day|week|month)$"),
     days: int = Query(30, ge=1, le=365),
+    city: Optional[str] = Query(None, description="Filter to a single client city"),
     conn: asyncpg.Connection = Depends(get_conn),
 ):
     trunc = {"day": "day", "week": "week", "month": "month"}[period]
@@ -58,10 +59,11 @@ async def wf1_leads(
         FROM clients
         WHERE created_at >= now() - make_interval(days => $1)
           AND is_recruiter = false
+          AND ($2::text IS NULL OR city = $2)
         GROUP BY period, segment
         ORDER BY period DESC
         """,
-        days,
+        days, city,
     )
 
     # Build [{period, ca_network, active_job_post, employer_lead, inbound, other}]
@@ -95,7 +97,9 @@ async def wf1_leads(
             COUNT(*) FILTER (WHERE source  = 'hr_contacts' AND is_recruiter = false AND stage::text != 'lead')  AS hr_reached,
             COUNT(*) FILTER (WHERE is_recruiter = true)                                                          AS recruiters_found
         FROM clients
-        """
+        WHERE ($1::text IS NULL OR city = $1)
+        """,
+        city,
     )
 
     ca_total         = int(pool["ca_total"]        or 0)
@@ -117,9 +121,10 @@ async def wf1_leads(
         FROM clients
         WHERE created_at >= now() - make_interval(days => $1)
           AND is_recruiter = false
+          AND ($2::text IS NULL OR city = $2)
         GROUP BY heat
         """,
-        days,
+        days, city,
     )
     mix_data = {r["heat"]: int(r["count"]) for r in mix}
 
@@ -525,6 +530,7 @@ async def wf1_onboarding(
 @router.get("/wf1/pipeline")
 async def wf1_pipeline(
     days: int = Query(90, ge=1, le=730),
+    city: Optional[str] = Query(None, description="Filter to a single client city"),
     conn: asyncpg.Connection = Depends(get_conn),
 ):
     # C21 — full funnel (till date, excludes recruiters)
@@ -533,8 +539,10 @@ async def wf1_pipeline(
         SELECT stage::text AS stage, COUNT(*) AS count
         FROM clients
         WHERE is_recruiter = false
+          AND ($1::text IS NULL OR city = $1)
         GROUP BY stage
-        """
+        """,
+        city,
     )
     stage_order = ["lead", "scraping", "scraped", "reachout_sent", "interested",
                    "agreement_sent", "onboarded", "deal_won", "disqualified"]
@@ -670,6 +678,80 @@ async def wf1_pipeline(
         },
         "ok": True,
     }
+
+
+# ── City-wise breakdowns (multi-city / pan-India expansion) ──────────────────
+
+@router.get("/city/clients")
+async def city_clients(conn: asyncpg.Connection = Depends(get_conn)):
+    rows = await conn.fetch(
+        """
+        SELECT
+            COALESCE(c.city, 'unknown') AS city,
+            COUNT(*) AS lead_count,
+            COUNT(*) FILTER (WHERE c.stage::text = 'onboarded')     AS onboarded_count,
+            COUNT(*) FILTER (WHERE c.stage::text = 'disqualified')  AS disqualified_count,
+            COUNT(*) FILTER (
+                WHERE EXISTS (
+                    SELECT 1 FROM client_candidate_mappings m
+                    WHERE m.client_id = c.id AND m.stage = 'placed'
+                )
+            ) AS clients_with_placement
+        FROM clients c
+        WHERE c.is_recruiter = false
+        GROUP BY c.city
+        ORDER BY lead_count DESC
+        """
+    )
+    return {
+        "data": [
+            {
+                "city": r["city"],
+                "lead_count": int(r["lead_count"] or 0),
+                "onboarded_count": int(r["onboarded_count"] or 0),
+                "disqualified_count": int(r["disqualified_count"] or 0),
+                "clients_with_placement": int(r["clients_with_placement"] or 0),
+            }
+            for r in rows
+        ],
+        "ok": True,
+    }
+
+
+@router.get("/city/candidates")
+async def city_candidates(conn: asyncpg.Connection = Depends(get_conn)):
+    rows = await conn.fetch(
+        """
+        SELECT
+            COALESCE(ca.city, 'unknown') AS city,
+            COUNT(*) AS pool_size,
+            COUNT(*) FILTER (WHERE LOWER(ca.evaluation_status) IN ('pass', 'passed'))  AS pass_count,
+            COUNT(*) FILTER (WHERE LOWER(ca.evaluation_status) IN ('fail', 'failed', 'reject')) AS fail_count,
+            COUNT(*) FILTER (WHERE ca.is_active = true) AS active_count,
+            COUNT(*) FILTER (
+                WHERE EXISTS (
+                    SELECT 1 FROM client_candidate_mappings m
+                    WHERE m.candidate_id = ca.id AND m.stage = 'placed'
+                )
+            ) AS placed_count
+        FROM candidates ca
+        GROUP BY ca.city
+        ORDER BY pool_size DESC
+        """
+    )
+    data = []
+    for r in rows:
+        evaluated = int(r["pass_count"] or 0) + int(r["fail_count"] or 0)
+        data.append({
+            "city": r["city"],
+            "pool_size": int(r["pool_size"] or 0),
+            "pass_count": int(r["pass_count"] or 0),
+            "fail_count": int(r["fail_count"] or 0),
+            "pass_rate": round(int(r["pass_count"] or 0) / evaluated * 100, 1) if evaluated else 0,
+            "active_count": int(r["active_count"] or 0),
+            "placed_count": int(r["placed_count"] or 0),
+        })
+    return {"data": data, "ok": True}
 
 
 # ── C27–C30 : Batch Analytics ─────────────────────────────────────────────────
@@ -2272,7 +2354,7 @@ async def new_analytics_clients(conn: asyncpg.Connection = Depends(get_conn)):
                 AND COALESCE(c.source,'') != 'inbound'
             ) AS others,
             COUNT(*) FILTER (WHERE dc.client_id IS NOT NULL) AS delivered,
-            COUNT(*) FILTER (WHERE c.stage::text IN ('interested','agreement_sent','onboarded','disqualified')) AS responded,
+            COUNT(*) FILTER (WHERE c.stage::text IN ('interested','agreement_sent','onboarded') OR c.is_dnd = true) AS responded,
             COUNT(*) FILTER (WHERE c.stage::text IN ('interested','agreement_sent','onboarded')) AS positive,
             COUNT(*) FILTER (WHERE c.stage::text IN ('agreement_sent','onboarded')) AS agreement_signed,
             COUNT(*) FILTER (WHERE c.stage::text = 'onboarded') AS in_matchmaking,
@@ -2412,7 +2494,7 @@ _CLIENT_DRILL: dict[str, str] = {
     "inbound":          "COALESCE(c.source,'') = 'inbound'",
     "others":           "COALESCE(c.segment,'') NOT IN ('employer_lead','active_job_post','ca_network') AND COALESCE(c.source,'') != 'inbound'",
     "delivered":        "EXISTS (SELECT 1 FROM whatsapp_messages wm2 WHERE wm2.client_id = c.id AND wm2.status IN ('delivered','read'))",
-    "responded":        "EXISTS (SELECT 1 FROM whatsapp_messages wm2 WHERE wm2.client_id = c.id AND wm2.direction = 'inbound')",
+    "responded":        "(c.stage::text IN ('interested','agreement_sent','onboarded') OR c.is_dnd = true)",
     "positive":         "c.stage::text IN ('interested','agreement_sent','onboarded')",
     "agreement_signed": "c.stage::text IN ('agreement_sent','onboarded')",
     "in_matchmaking":   "c.stage::text = 'onboarded'",
@@ -2448,6 +2530,7 @@ async def new_analytics_clients_records(
     col: str = Query(...),
     batch_date: Optional[str] = Query(None),
     sub_type: Optional[str] = Query(None),
+    city: Optional[str] = Query(None),
     conn: asyncpg.Connection = Depends(get_conn),
 ):
     from fastapi import HTTPException as _HTTPException
@@ -2472,8 +2555,9 @@ async def new_analytics_clients_records(
             FROM clients c
             INNER JOIN cfw ON cfw.client_id = c.id AND cfw.batch_date = $1
             WHERE c.is_recruiter = false AND {full_cond}
+              AND ($2::text IS NULL OR c.city = $2)
             ORDER BY c.company_name
-        """, bd_obj)
+        """, bd_obj, city)
     else:
         rows = await conn.fetch(f"""
             WITH cfw AS (
@@ -2485,8 +2569,9 @@ async def new_analytics_clients_records(
             FROM clients c
             INNER JOIN cfw ON cfw.client_id = c.id
             WHERE c.is_recruiter = false AND {full_cond}
+              AND ($1::text IS NULL OR c.city = $1)
             ORDER BY c.company_name
-        """)
+        """, city)
 
     data = [{"id": str(r["id"]), "company_name": r["company_name"], "job_title": r["job_title"],
              "stage": r["stage"], "segment": r["segment"], "poc_phone": r["poc_phone"],
@@ -2540,27 +2625,94 @@ async def new_analytics_candidates_records(
 
 # ── Breakdown: per-batch × per-subtype ────────────────────────────────────────
 
-# TODO: remove once real batch data is flowing through the DB
-# Daily status snapshot Jun 19–27 under job_post segment.
-# Columns: batch_date, sub_type, batch_size, delivered, responded, positive,
-#          agreement, matchmaking, interview, placement
-_DUMMY_CLIENT_BATCHES: list[dict] = [
-    {"batch_date": "2026-06-19", "sub_type": "job_post", "note": None, "batch_size": 103, "delivered": 93, "responded": 24, "positive": 6, "agreement": 3, "matchmaking": 3, "interview": 23, "placement": 1},
-    {"batch_date": "2026-06-20", "sub_type": "job_post", "note": None, "batch_size": 47,  "delivered": 42, "responded": 11, "positive": 2, "agreement": 1, "matchmaking": 1, "interview": 16, "placement": 0},
-    {"batch_date": "2026-06-23", "sub_type": "job_post", "note": None, "batch_size": 43,  "delivered": 39, "responded": 11, "positive": 4, "agreement": 1, "matchmaking": 1, "interview": 13, "placement": 1},
-    {"batch_date": "2026-06-24", "sub_type": "job_post", "note": None, "batch_size": 36,  "delivered": 32, "responded": 8,  "positive": 2, "agreement": 0, "matchmaking": 0, "interview": 12, "placement": 1},
-    {"batch_date": "2026-06-25", "sub_type": "job_post", "note": None, "batch_size": 76,  "delivered": 69, "responded": 18, "positive": 7, "agreement": 2, "matchmaking": 2, "interview": 13, "placement": 1},
-    {"batch_date": "2026-06-26", "sub_type": "job_post", "note": None, "batch_size": 46,  "delivered": 42, "responded": 10, "positive": 4, "agreement": 1, "matchmaking": 1, "interview": 6,  "placement": 2},
-    {"batch_date": "2026-06-27", "sub_type": "job_post", "note": None, "batch_size": 44,  "delivered": 39, "responded": 10, "positive": 3, "agreement": 0, "matchmaking": 0, "interview": 6,  "placement": 1},
-    {"batch_date": "2026-06-28", "sub_type": "job_post", "note": None, "batch_size": 38,  "delivered": 34, "responded": 9,  "positive": 3, "agreement": 1, "matchmaking": 1, "interview": 5,  "placement": 0},
-    {"batch_date": "2026-06-29", "sub_type": "job_post", "note": None, "batch_size": 55,  "delivered": 49, "responded": 2,  "positive": 1, "agreement": 0, "matchmaking": 0, "interview": 0,  "placement": 0},
-]
+# Sources that go through the automated scrape → enrich pipeline (mirrors
+# cron.py's _ENRICH_SOURCES) — excludes ca_network / client_onboarding_form,
+# which aren't scraped leads.
+_SCRAPED_SOURCES = ("naukri", "workindia", "indeed", "apna", "candidate_resume", "sourcing_resume")
 
-_DUMMY_CAND_BATCHES: list[dict] = []
+_SCRAPE_FUNNEL_DRILL: dict[str, str] = {
+    "scraped":             "TRUE",
+    "numbers_found":       "enrich_status = 'enriched'",
+    "not_found":           "enrich_status = 'not_found'",
+    "recruiters_excluded": "is_recruiter = true",
+}
+
+
+@router.get("/new/clients/scrape-funnel")
+async def new_analytics_scrape_funnel(conn: asyncpg.Connection = Depends(get_conn)):
+    """
+    Scrape → enrich funnel: how many leads we scraped per day vs. how many of
+    those we actually found a phone number for. Batched by the day the lead
+    was scraped (created_at) — distinct from the reachout breakdown below,
+    which batches by when a message was sent, since many scraped leads never
+    reach that point (no number found, or classified as a recruiter).
+    """
+    rows = await conn.fetch(
+        """
+        SELECT
+            DATE(created_at AT TIME ZONE 'Asia/Kolkata') AS batch_date,
+            COUNT(*)                                                        AS scraped,
+            COUNT(*) FILTER (WHERE enrich_status = 'enriched')              AS numbers_found,
+            COUNT(*) FILTER (WHERE enrich_status = 'not_found')             AS not_found,
+            COUNT(*) FILTER (WHERE is_recruiter = true)                     AS recruiters_excluded
+        FROM clients
+        WHERE source = ANY($1::text[])
+        GROUP BY 1
+        ORDER BY 1 DESC
+        """,
+        list(_SCRAPED_SOURCES),
+    )
+    data = [
+        {
+            "batch_date":           str(r["batch_date"]),
+            "scraped":              int(r["scraped"]),
+            "numbers_found":        int(r["numbers_found"]),
+            "not_found":            int(r["not_found"]),
+            "recruiters_excluded":  int(r["recruiters_excluded"]),
+            "find_rate":            round(r["numbers_found"] / r["scraped"] * 100, 1) if r["scraped"] else 0,
+        }
+        for r in rows
+    ]
+    return {"data": data, "ok": True}
+
+
+@router.get("/new/clients/scrape-funnel/records")
+async def new_analytics_scrape_funnel_records(
+    col: str = Query(...),
+    batch_date: Optional[str] = Query(None),
+    conn: asyncpg.Connection = Depends(get_conn),
+):
+    from fastapi import HTTPException as _HTTPException
+    cond = _SCRAPE_FUNNEL_DRILL.get(col)
+    if not cond:
+        raise _HTTPException(400, f"Unknown column: {col}")
+
+    where = [f"source = ANY($1::text[])", f"({cond})"]
+    params: list = [list(_SCRAPED_SOURCES)]
+    if batch_date:
+        from datetime import date as _date
+        params.append(_date.fromisoformat(batch_date))
+        where.append(f"DATE(created_at AT TIME ZONE 'Asia/Kolkata') = ${len(params)}")
+
+    rows = await conn.fetch(
+        f"""
+        SELECT id, company_name, job_title, stage::text AS stage, poc_phone, enrich_status
+        FROM clients
+        WHERE {' AND '.join(where)}
+        ORDER BY company_name
+        """,
+        *params,
+    )
+    data = [{"id": str(r["id"]), "company_name": r["company_name"], "job_title": r["job_title"],
+             "stage": r["stage"], "poc_phone": r["poc_phone"], "enrich_status": r["enrich_status"]} for r in rows]
+    return {"data": data, "count": len(data), "ok": True}
 
 
 @router.get("/new/clients/breakdown")
-async def new_analytics_clients_breakdown(conn: asyncpg.Connection = Depends(get_conn)):
+async def new_analytics_clients_breakdown(
+    city: Optional[str] = Query(None, description="Filter to a single client city"),
+    conn: asyncpg.Connection = Depends(get_conn),
+):
     rows = await conn.fetch("""
         WITH client_batch AS (
             SELECT
@@ -2578,6 +2730,7 @@ async def new_analytics_clients_breakdown(conn: asyncpg.Connection = Depends(get
               ON wm.client_id = c.id AND wm.direction = 'outbound' AND wm.sent_at IS NOT NULL
                  AND NOT wm.excluded_from_analytics
             WHERE c.is_recruiter = false
+              AND ($1::text IS NULL OR c.city = $1)
             GROUP BY c.id, c.segment, c.source
         )
         SELECT
@@ -2590,7 +2743,7 @@ async def new_analytics_clients_breakdown(conn: asyncpg.Connection = Depends(get
                 WHERE wm2.client_id = cb.id AND wm2.status IN ('delivered','read')
                   AND NOT wm2.excluded_from_analytics
             ))                                                                          AS delivered,
-            COUNT(*) FILTER (WHERE c.stage::text IN ('interested','agreement_sent','onboarded','disqualified'))
+            COUNT(*) FILTER (WHERE c.stage::text IN ('interested','agreement_sent','onboarded') OR c.is_dnd = true)
                                                                                         AS responded,
             COUNT(*) FILTER (WHERE c.stage::text IN ('interested','agreement_sent','onboarded'))
                                                                                         AS positive,
@@ -2609,21 +2762,8 @@ async def new_analytics_clients_breakdown(conn: asyncpg.Connection = Depends(get
         LEFT JOIN analytics_batch_notes abn ON abn.batch_day = cb.batch_date
         GROUP BY cb.batch_date, cb.sub_type, abn.note
         ORDER BY cb.batch_date DESC, cb.sub_type
-    """)
+    """, city)
     data = [{**dict(r), "batch_date": str(r["batch_date"])} for r in rows]
-    # add dummy offsets on top of real data (TODO: remove once real data reflects full activity)
-    idx = {(r["batch_date"], r["sub_type"]): i for i, r in enumerate(data)}
-    _NUM_FIELDS = ("batch_size", "delivered", "responded", "positive",
-                   "agreement", "matchmaking", "interview", "placement")
-    for d in _DUMMY_CLIENT_BATCHES:
-        key = (d["batch_date"], d["sub_type"])
-        if key in idx:
-            row = data[idx[key]]
-            for f in _NUM_FIELDS:
-                row[f] = (row.get(f) or 0) + d[f]
-        else:
-            data.append(dict(d))
-            idx[key] = len(data) - 1
     data.sort(key=lambda r: r["batch_date"], reverse=True)
     return {"data": data, "ok": True}
 
@@ -2665,19 +2805,6 @@ async def new_analytics_candidates_breakdown(conn: asyncpg.Connection = Depends(
     """)
 
     data = [{**dict(r), "batch_date": str(r["batch_date"])} for r in rows]
-    # add dummy offsets on top of real data (TODO: remove once real data reflects full activity)
-    idx = {(r["batch_date"], r["sub_type"]): i for i, r in enumerate(data)}
-    _CAND_FIELDS = ("batch_size", "delivered", "not_looking", "not_interested",
-                    "positive", "form", "ai_call", "passed", "junior", "senior")
-    for d in _DUMMY_CAND_BATCHES:
-        key = (d["batch_date"], d["sub_type"])
-        if key in idx:
-            row = data[idx[key]]
-            for f in _CAND_FIELDS:
-                row[f] = (row.get(f) or 0) + d[f]
-        else:
-            data.append(dict(d))
-            idx[key] = len(data) - 1
     data.sort(key=lambda r: r["batch_date"], reverse=True)
     return {"data": data, "ok": True}
 

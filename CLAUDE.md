@@ -511,6 +511,6 @@ rejected_by_client  → bg-red-100 text-red-600
 
 - Candidate create / edit / delete endpoints or forms
 - Ringg AI integration or voice call triggers
-- Automated WhatsApp funnels (the WA funnel runs in a separate system)
+- ~~Automated WhatsApp funnels (the WA funnel runs in a separate system)~~ — outdated: the WA funnel now runs in this codebase (see `services/flow_engine.py`, `routers/whatsapp.py`), with automated sends on both candidate and client sides and no human-approval step outside the explicit `pending_review` bulk-WA flow (rule 8 above)
 - Evaluation report generation
 - Any direct Supabase client usage — all DB access is via asyncpg pool

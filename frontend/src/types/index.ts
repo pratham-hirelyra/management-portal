@@ -41,7 +41,10 @@ export interface Client {
   backdoor_period: string | null
   agreement_url: string
   source: string
-  phone_numbers: Array<{ source: string; number: string; agreed?: boolean }> | null
+  // Older/scraped rows store this as a plain string array instead of the
+  // {source, number, agreed} object shape — see ClientDetailPage's Phone
+  // Numbers section for the normalization.
+  phone_numbers: Array<{ source: string; number: string; agreed?: boolean } | string> | null
   agreed_phone: string | null
   company_website: string | null
   company_description: string | null

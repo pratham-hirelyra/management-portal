@@ -79,6 +79,7 @@ class ClientCreate(BaseModel):
     labels: Optional[list[str]] = None
     is_ca_firm: Optional[bool] = None
     travel_radius: Optional[int] = None
+    paid_leaves: Optional[int] = None
     skip_agreement: bool = False
 
 
@@ -137,6 +138,7 @@ class ClientUpdate(BaseModel):
     onboarding_reminder_count: Optional[int] = None
     agreement_reminder_count: Optional[int] = None
     available_slots: Optional[list[dict]] = None
+    ai_rm_enabled: Optional[bool] = None
     stop_sourcing: Optional[bool] = None
     is_bot: Optional[bool] = None
 

@@ -62,7 +62,7 @@ _CANDIDATE_SELECT = """
         JOIN clients cl2 ON cl2.id = ccm2.client_id
         WHERE ccm2.candidate_id = c.id
           AND ccm2.stage::text NOT IN (
-              'placed','rejected','not_interested','declined_for_interview','client_closed'
+              'placed','rejected','rejected_by_client','not_interested','declined_for_interview','client_closed'
           )
     ) am ON true
 """
@@ -87,6 +87,7 @@ class CandidateOverrideBody(BaseModel):
     photo_url: str | None = None
     notice_period: str | None = None
     religion: str | None = None
+    ai_rm_enabled: bool | None = None
 
 
 @router.get("")
@@ -172,6 +173,23 @@ async def create_candidate(
 
     full = await conn.fetchrow(f"{_CANDIDATE_SELECT} WHERE c.id = $1", row["id"])
     return {"data": dict(full), "ok": True}
+
+
+@router.get("/exists")
+async def candidate_exists(
+    phone: str,
+    conn: asyncpg.Connection = Depends(get_conn),
+):
+    """Used by the public /apply form to catch a repeat submission on blur —
+    lets the form point returning candidates at portal login instead of
+    silently overwriting their profile."""
+    cleaned = re.sub(r'\D', '', phone)
+    if len(cleaned) == 12 and cleaned.startswith('91'):
+        cleaned = cleaned[2:]
+    if len(cleaned) != 10:
+        return {"data": {"exists": False}, "ok": True}
+    exists = await conn.fetchval("SELECT 1 FROM candidates WHERE phone = $1", cleaned)
+    return {"data": {"exists": bool(exists)}, "ok": True}
 
 
 @router.get("/{candidate_id}")
@@ -295,14 +313,22 @@ async def upsert_override(
     add("photo_url", body.photo_url)
     add("notice_period", body.notice_period)
     add("religion", body.religion)
+    add("ai_rm_enabled", body.ai_rm_enabled)
 
     # Geocode location when provided
     if body.current_location is not None:
         add("current_location", body.current_location)
-        lat, lng = await _geocode(body.current_location)
+        lat, lng, city, state = await _geocode(body.current_location)
         if lat is not None:
             add("location_lat", lat)
             add("location_lng", lng)
+        add("city", city)
+        if state is not None:
+            # Never overwrite an existing state — it's populated by the external
+            # voice-screening automation, which owns this field.
+            sets.append(f"state = COALESCE(state, ${i})")
+            params.append(state)
+            i += 1
 
     # Merge gst/tds/tools into other_details jsonb without overwriting other keys
     other_patch: dict = {}
@@ -543,25 +569,27 @@ async def _gpt_analyze_resume(resume_text: str) -> dict:
     return json.loads(resp.choices[0].message.content or "{}")
 
 
-async def _geocode(location: str) -> tuple[float | None, float | None]:
+async def _geocode(location: str) -> tuple[float | None, float | None, str | None, str | None]:
     if not location:
-        return None, None
+        return None, None, None, None
     key = os.environ.get("GOOGLE_MAPS_API_KEY", "")
     if not key:
-        return None, None
+        return None, None, None, None
     try:
         async with httpx.AsyncClient(timeout=8.0) as http:
             r = await http.get(
                 "https://maps.googleapis.com/maps/api/geocode/json",
-                params={"address": location, "key": key},
+                params={"address": location, "key": key, "region": "in"},
             )
         results = r.json().get("results", [])
         if results:
+            from services.city_service import parse_city_state
             loc = results[0]["geometry"]["location"]
-            return loc["lat"], loc["lng"]
+            city, state = parse_city_state(results[0].get("address_components"))
+            return loc["lat"], loc["lng"], city, state
     except Exception:
         pass
-    return None, None
+    return None, None, None, None
 
 
 def _upload_gcs_sync(content: bytes, blob_path: str, content_type: str) -> str:
@@ -794,7 +822,7 @@ async def _regenerate_report(candidate: dict) -> str | None:
 
 async def _process_apply(phone: str, form: dict, resume_content: bytes | None,
                          resume_filename: str, photo_content: bytes | None,
-                         photo_filename: str) -> None:
+                         photo_filename: str, skip_ai_call: bool = False) -> None:
     """Background task: uploads, GPT analysis, DB update.
     AI call fires ONLY when the candidate's latest mapping is 'interested' —
     i.e. we sent them a JD for a specific client and they tapped INTERESTED.
@@ -836,8 +864,9 @@ async def _process_apply(phone: str, form: dict, resume_content: bytes | None,
         cv_url = f"{results[0]}?v={int(time.time())}"
     if photo_content and not isinstance(results[1], Exception):
         photo_url = results[1]
+    geo_city, geo_state = None, None
     if not isinstance(results[2], Exception) and results[2]:
-        lat, lon = results[2]
+        lat, lon, geo_city, geo_state = results[2]
 
     if resume_content:
         resume_text = _extract_text_from_resume(resume_content, resume_filename)
@@ -915,6 +944,13 @@ async def _process_apply(phone: str, form: dict, resume_content: bytes | None,
         add("current_salary", float(form["current_salary"]) if form.get("current_salary") else None)
         add("location_lat", lat)
         add("location_lng", lon)
+        add("city", geo_city)
+        if geo_state is not None:
+            # Never overwrite an existing state — it's populated by the external
+            # voice-screening automation, which owns this field.
+            sets.append(f"state = COALESCE(state, ${idx})")
+            params.append(geo_state)
+            idx += 1
         add("cv_url", cv_url)
         add("photo_url", photo_url)
         add("experience", experience_str)
@@ -950,47 +986,21 @@ async def _process_apply(phone: str, form: dict, resume_content: bytes | None,
         except Exception as e:
             print(f"[apply] report generation failed for {phone}: {e}")
 
-        # AI call only when latest mapping = 'interested' (candidate tapped INTERESTED on a JD).
-        # Inbound organic (no mapping) → store data silently, no AI call.
-        # All other stages (declined role, etc.) → passive ack only.
+        # The AI call fires for every real submission (skip_ai_call is
+        # effectively always False now — see apply_candidate) as long as this
+        # candidate hasn't already been evaluated. It's a general screening
+        # test, independent of job_id/hard-filter outcome for any one client.
         eval_status = (row["evaluation_status"] or "").lower()
-        if eval_status not in ("pass", "passed", "fail", "failed", "reject"):
-            latest = await conn.fetchrow(
-                """
-                SELECT ccm.id, ccm.client_id, ccm.stage::text AS stage
-                FROM client_candidate_mappings ccm
-                WHERE ccm.candidate_id = $1
-                ORDER BY COALESCE(ccm.intent_received_at, ccm.updated_at) DESC NULLS LAST
-                LIMIT 1
-                """,
-                row["id"],
-            )
-            latest_stage = latest["stage"] if latest else None
-            if latest_stage == "interested":
-                from services.flow_engine import (
-                    post_form_submission_flow, _check_hard_filters, decline_for_filter_mismatch,
+        if not skip_ai_call and eval_status not in ("pass", "passed", "fail", "failed", "reject"):
+            from services.flow_engine import post_form_submission_flow
+            try:
+                await post_form_submission_flow(
+                    phone,
+                    row["id"],
+                    form.get("candidate_name") or "",
                 )
-                ok, reason_code, reason = await _check_hard_filters(conn, latest["client_id"], row["id"])
-                if ok:
-                    try:
-                        await post_form_submission_flow(
-                            phone,
-                            row["id"],
-                            form.get("candidate_name") or "",
-                        )
-                    except Exception as e:
-                        print(f"[apply] post-form flow failed for {phone}: {e}")
-                else:
-                    print(f"[apply] candidate {row['id']} failed hard filter for client {latest['client_id']}: {reason}")
-                    await decline_for_filter_mismatch(conn, latest["id"], row["id"], latest["client_id"], phone, reason_code)
-            else:
-                # latest_stage is not None (declined role, etc.) OR None (inbound organic, no mapping)
-                # → passive ack: "we'll share opportunities soon"
-                from services.flow_engine import post_form_passive_flow
-                try:
-                    await post_form_passive_flow(phone, form.get("candidate_name") or "", form.get("current_location") or "")
-                except Exception as e:
-                    print(f"[apply] passive flow failed for {phone}: {e}")
+            except Exception as e:
+                print(f"[apply] post-form flow failed for {phone}: {e}")
 
         # Insert current employer as a client lead (skip if already exists)
         current_employer = gpt_data.get("current_employer")
@@ -1032,11 +1042,25 @@ async def apply_candidate(
     notice_period: str = Form(""),
     current_salary: str = Form(""),
     other_details: str = Form("{}"),
+    job_id: str = Form(""),
+    continue_anyway: str = Form(""),
+    declined_role: str = Form(""),
 ):
     """
     Accepts form fields only — no file upload here.
     Files are sent separately via POST /candidates/upload-cv after the candidate
     sees the success screen, so they never wait for the upload.
+
+    job_id: mapping_id carried in the JD-share link's ?job_id= query param (see
+    services/msg91_service.py:_jd_v3_apply_url) — this specific job's hard
+    filters are checked synchronously to decide whether THIS mapping proceeds
+    or gets declined. The AI call itself is unconditional: it fires for every
+    real submission that reaches _process_apply below, regardless of job_id
+    presence, hard-filter outcome, or declined_role — it's a general
+    screening test, not gated on any one client's fit.
+    continue_anyway: resubmission after the candidate saw the mismatch popup
+    and chose to proceed anyway — skips the check, declines just this mapping
+    (the AI call still fires).
     """
     cleaned = re.sub(r'\D', '', candidate_phone_number)
     if len(cleaned) == 12 and cleaned.startswith('91'):
@@ -1057,42 +1081,139 @@ async def apply_candidate(
         "other_details": other_details,
     }
 
+    # The AI call is a general screening test, independent of any one
+    # client's fit — it fires for every real submission that reaches the
+    # background task below, regardless of job_id/hard-filter outcome.
+    # skip_ai_call only matters as a variable name for the early
+    # hard_filter_failed return below, which exits before it's ever read.
+    skip_ai_call = False
+    hard_filter_failed = False
+    mapping_eval_status: str | None = None
+
+    if job_id and declined_role.lower() != "true":
+        try:
+            job_uuid = uuid.UUID(job_id)
+        except ValueError:
+            job_uuid = None
+
+        if job_uuid:
+            async with get_pool().acquire() as conn:
+                mapping = await conn.fetchrow(
+                    """
+                    SELECT ccm.id, ccm.client_id, ccm.candidate_id, c.evaluation_status
+                    FROM client_candidate_mappings ccm
+                    JOIN candidates c ON c.id = ccm.candidate_id
+                    WHERE ccm.id = $1
+                    """,
+                    job_uuid,
+                )
+                if mapping:
+                    mapping_eval_status = mapping["evaluation_status"]
+                    # Save just the fields the hard filter reads, synchronously,
+                    # so the check sees this submission's real values — the
+                    # full save (GPT resume parse, CV/photo) still happens in
+                    # the background task below either way.
+                    #
+                    # Geocoding IS done here too, not deferred — the travel-radius
+                    # filter needs fresh coordinates for THIS submission's location,
+                    # not whatever was geocoded on a previous submission (which
+                    # could be stale or simply absent on a first-ever submit).
+                    def safe_int(val, lo=None, hi=None):
+                        try:
+                            v = int(val)
+                            if lo is not None and v < lo: return None
+                            if hi is not None and v > hi: return None
+                            return v
+                        except (TypeError, ValueError):
+                            return None
+
+                    new_lat = new_lng = new_city = new_state = None
+                    if current_location:
+                        new_lat, new_lng, new_city, new_state = await _geocode(current_location)
+
+                    await conn.execute(
+                        """
+                        UPDATE candidates SET
+                            current_location = COALESCE(NULLIF($2, ''), current_location),
+                            district         = COALESCE(NULLIF($3, ''), district),
+                            working_radius   = COALESCE($4, working_radius),
+                            gender           = COALESCE(NULLIF($5, ''), gender),
+                            age_years        = COALESCE($6, age_years),
+                            industry         = COALESCE(NULLIF($7, ''), industry),
+                            job_type         = COALESCE(NULLIF($8, ''), job_type),
+                            work_preference  = COALESCE(NULLIF($9, ''), work_preference),
+                            notice_period    = COALESCE(NULLIF($10, ''), notice_period),
+                            current_salary   = COALESCE($11, current_salary),
+                            location_lat     = COALESCE($12, location_lat),
+                            location_lng     = COALESCE($13, location_lng),
+                            city             = COALESCE($14, city),
+                            state            = COALESCE(state, $15),
+                            updated_at       = now()
+                        WHERE id = $1
+                        """,
+                        mapping["candidate_id"],
+                        current_location, district,
+                        safe_int(travel_distance, lo=0, hi=2000),
+                        gender, safe_int(age, lo=16, hi=80),
+                        industry_exposure, opportunity_type, job_requirement, notice_period,
+                        float(current_salary) if current_salary else None,
+                        new_lat, new_lng, new_city, new_state,
+                    )
+
+                    from services.flow_engine import _check_hard_filters_all
+                    mismatches = await _check_hard_filters_all(conn, mapping["client_id"], mapping["candidate_id"])
+
+                    if mismatches and continue_anyway.lower() != "true":
+                        # requirement (3rd element) already states the client's
+                        # actual requirement in plain terms — dedup in case two
+                        # checks produce the identical requirement line.
+                        requirements = list(dict.fromkeys(r for _, _, r in mismatches))
+                        return {
+                            "ok": True,
+                            "outcome": "hard_filter_failed",
+                            "reasons": requirements,
+                        }
+                    elif mismatches:
+                        from services.flow_engine import decline_for_filter_mismatch
+                        reason_code, reason, _requirement = mismatches[0]
+                        phone_91 = f"91{cleaned}"
+                        await decline_for_filter_mismatch(
+                            conn, mapping["id"], mapping["candidate_id"], mapping["client_id"],
+                            phone_91, reason_code=reason_code,
+                            human_reason=reason,
+                        )
+                        # Declined for this specific client, but the AI call
+                        # still fires — it's a general screening test, not
+                        # gated on any one job's fit.
+                        hard_filter_failed = True
+                    # else: no mismatches — candidate fits this job, proceeds normally below.
+
     # Mark form_submitted immediately so cron reminders stop before the
     # background task (GPT, uploads) finishes — avoids race-condition re-sends.
-    # Also decide, synchronously, which success screen the frontend should show —
-    # same "latest mapping stage" check _process_apply uses below to pick between
-    # post_form_submission_flow (AI call) and post_form_passive_flow (no call).
-    outcome = "passive"
+    outcome = "role_declined" if hard_filter_failed else "ai_call"
+    # Whether _process_apply will actually (re)trigger a Ringg call — it won't
+    # if this candidate was already evaluated (see the same eval_status guard
+    # in _process_apply below). The frontend uses this to decide whether to
+    # mention "you'll get a call" in the role_declined copy.
+    ai_call_pending = (mapping_eval_status or "").lower() not in ("pass", "passed", "fail", "failed", "reject")
     try:
         async with get_pool().acquire(timeout=5) as _conn:
             await _conn.execute(
                 "UPDATE candidates SET form_submitted = true, updated_at = now() WHERE phone = $1",
                 cleaned,
             )
-            latest = await _conn.fetchrow(
-                """
-                SELECT ccm.stage::text AS stage
-                FROM client_candidate_mappings ccm
-                JOIN candidates c ON c.id = ccm.candidate_id
-                WHERE c.phone = $1
-                ORDER BY COALESCE(ccm.intent_received_at, ccm.updated_at) DESC NULLS LAST
-                LIMIT 1
-                """,
-                cleaned,
-            )
-            if latest and latest["stage"] == "interested":
-                outcome = "ai_call"
     except Exception as _e:
-        print(f"[apply] form_submitted pre-mark / outcome check failed for {cleaned}: {_e}")
+        print(f"[apply] form_submitted pre-mark failed for {cleaned}: {_e}")
 
     background_tasks.add_task(
         _process_apply,
         cleaned, form,
         None, "",
         None, "",
+        skip_ai_call,
     )
 
-    return {"ok": True, "outcome": outcome}
+    return {"ok": True, "outcome": outcome, "ai_call_pending": ai_call_pending}
 
 
 @router.post("/upload-cv", status_code=200)
@@ -1151,12 +1272,39 @@ async def _process_cv_upload(
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
+    # A failed GCS upload here used to leave the candidate's cv_url/photo_url
+    # simply unset, forever, with nothing anywhere recording that anything
+    # was even attempted — the candidate saw a success screen and had no way
+    # to know their file never actually landed. Alert ops instead of
+    # silently dropping it.
     cv_url = None
     photo_url = None
-    if resume_content and not isinstance(results[0], Exception):
-        cv_url = f"{results[0]}?v={int(time.time())}"
-    if photo_content and not isinstance(results[1], Exception):
-        photo_url = results[1]
+    if resume_content:
+        if isinstance(results[0], Exception):
+            print(f"[upload-cv] resume upload failed for {phone}: {results[0]}")
+            try:
+                from services.google_chat_service import send_alert
+                await send_alert(
+                    "Candidate resume upload failed", str(results[0]),
+                    severity="ERROR", context={"phone": phone},
+                )
+            except Exception:
+                pass
+        else:
+            cv_url = f"{results[0]}?v={int(time.time())}"
+    if photo_content:
+        if isinstance(results[1], Exception):
+            print(f"[upload-cv] photo upload failed for {phone}: {results[1]}")
+            try:
+                from services.google_chat_service import send_alert
+                await send_alert(
+                    "Candidate photo upload failed", str(results[1]),
+                    severity="ERROR", context={"phone": phone},
+                )
+            except Exception:
+                pass
+        else:
+            photo_url = results[1]
 
     gpt_data: dict = {}
     if resume_content:
@@ -1164,8 +1312,8 @@ async def _process_cv_upload(
         if resume_text.strip():
             try:
                 gpt_data = await _gpt_analyze_resume(resume_text)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[upload-cv] GPT resume analysis failed for {phone}: {e}")
 
     total_years = float(gpt_data.get("total_experience_years") or 0)
     num_jobs = int(gpt_data.get("num_jobs") or 0)
@@ -1202,7 +1350,17 @@ async def _process_cv_upload(
                 )
             print(f"[upload-cv] cv + GPT updated for {phone}: cv={bool(cv_url)} stability={stability}")
     except Exception as e:
+        # The file may have uploaded to GCS successfully but never got saved
+        # onto the candidate record — same "invisible failure" risk as above.
         print(f"[upload-cv] DB update failed for {phone}: {e}")
+        try:
+            from services.google_chat_service import send_alert
+            await send_alert(
+                "Candidate upload-cv DB update failed", str(e),
+                severity="ERROR", context={"phone": phone, "cv_url": cv_url or "", "photo_url": photo_url or ""},
+            )
+        except Exception:
+            pass
 
 
 # ── Google Sheets import ───────────────────────────────────────────────────────

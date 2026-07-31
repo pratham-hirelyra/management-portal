@@ -25,9 +25,16 @@ interface MatchmakingClient {
   pool_size: number; interested_count: number; interviews_booked: number; total_mapped: number
 }
 
+interface ScrapeFunnelRow {
+  batch_date: string
+  scraped: number; numbers_found: number; not_found: number; recruiters_excluded: number
+  find_rate: number
+}
+
 interface DrillState {
-  entity: 'clients' | 'candidates'; col: string
+  entity: 'clients' | 'candidates' | 'scrape-funnel'; col: string
   batch_date: string | null; sub_type: string | null; title: string
+  city?: string | null
 }
 
 interface ChecklistBatch { batch_date: string; tasks: Record<string, string> }
@@ -244,10 +251,16 @@ function RatePill({ n, d, lo = 50 }: { n: number; d: number; lo?: number }) {
 // ── DrillModal ────────────────────────────────────────────────────────────────
 
 function DrillModal({ drill, onClose }: { drill: DrillState; onClose: () => void }) {
+  const drillUrl = drill.entity === 'scrape-funnel' ? '/analytics/new/clients/scrape-funnel/records' : `/analytics/new/${drill.entity}/records`
   const { data, isLoading } = useQuery({
-    queryKey: ['analytics-drill', drill.entity, drill.col, drill.batch_date, drill.sub_type],
-    queryFn: () => api.get(`/analytics/new/${drill.entity}/records`, {
-      params: { col: drill.col, ...(drill.batch_date && { batch_date: drill.batch_date }), ...(drill.sub_type && { sub_type: drill.sub_type }) }
+    queryKey: ['analytics-drill', drill.entity, drill.col, drill.batch_date, drill.sub_type, drill.city],
+    queryFn: () => api.get(drillUrl, {
+      params: {
+        col: drill.col,
+        ...(drill.batch_date && { batch_date: drill.batch_date }),
+        ...(drill.sub_type && { sub_type: drill.sub_type }),
+        ...(drill.city && { city: drill.city }),
+      }
     }).then(r => r.data.data),
   })
 
@@ -267,7 +280,7 @@ function DrillModal({ drill, onClose }: { drill: DrillState; onClose: () => void
         <div className="flex-1 overflow-y-auto">
           {isLoading ? <Spinner /> : !data?.length ? (
             <div className="flex items-center justify-center h-32 text-sm text-gray-400">No records</div>
-          ) : drill.entity === 'clients' ? (
+          ) : drill.entity === 'clients' || drill.entity === 'scrape-funnel' ? (
             <ul className="divide-y divide-gray-100">
               {data.map((r: any) => (
                 <li key={r.id} className="px-5 py-3 hover:bg-gray-50">
@@ -307,6 +320,70 @@ function DrillModal({ drill, onClose }: { drill: DrillState; onClose: () => void
         {data && <div className="px-5 py-3 border-t border-gray-100 text-xs text-gray-400">{data.length} record{data.length !== 1 ? 's' : ''}</div>}
       </div>
     </div>
+  )
+}
+
+// ── ScrapeFunnelTable ─────────────────────────────────────────────────────────
+
+function ScrapeFunnelTable() {
+  const [drill, setDrill] = useState<DrillState | null>(null)
+  const { data: rawRows, isLoading } = useQuery({
+    queryKey: ['analytics-scrape-funnel'],
+    queryFn: () => api.get('/analytics/new/clients/scrape-funnel').then(r => r.data.data as ScrapeFunnelRow[]),
+  })
+
+  if (isLoading) return <Spinner />
+  const rows = rawRows ?? []
+  if (!rows.length) return <div className="flex items-center justify-center h-32 bg-gray-50 rounded-xl border border-dashed border-gray-200"><p className="text-sm text-gray-400">No scraping data yet</p></div>
+
+  const open = (col: string, batch_date: string | null, title: string) =>
+    setDrill({ entity: 'scrape-funnel', col, batch_date, sub_type: null, title })
+
+  const totals = rows.reduce((a, r) => ({
+    scraped: a.scraped + r.scraped, numbers_found: a.numbers_found + r.numbers_found,
+    not_found: a.not_found + r.not_found, recruiters_excluded: a.recruiters_excluded + r.recruiters_excluded,
+  }), { scraped: 0, numbers_found: 0, not_found: 0, recruiters_excluded: 0 })
+
+  return (
+    <>
+      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="px-4 py-3 text-left text-gray-500 font-semibold uppercase tracking-wider">Batch (scraped)</th>
+                <th className="px-3 py-3 text-center text-gray-500 font-semibold uppercase tracking-wider">Scraped</th>
+                <th className="px-3 py-3 text-center text-green-600 font-semibold uppercase tracking-wider">Numbers<br />Found</th>
+                <th className="px-3 py-3 text-center text-red-500 font-semibold uppercase tracking-wider">Not<br />Found</th>
+                <th className="px-3 py-3 text-center text-gray-400 font-semibold uppercase tracking-wider">Recruiters<br />Excluded</th>
+                <th className="px-3 py-3 text-center text-gray-500 font-semibold uppercase tracking-wider">Find<br />Rate</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.batch_date} className="hover:bg-gray-50/60 border-b border-gray-100">
+                  <td className="px-4 py-2.5 text-xs font-medium text-gray-700">{fmtDate(r.batch_date)}</td>
+                  <NC n={r.scraped} onClick={() => open('scraped', r.batch_date, `${fmtDate(r.batch_date)} — Scraped`)} />
+                  <NC n={r.numbers_found} base={r.scraped} label="scraped" onClick={() => open('numbers_found', r.batch_date, `${fmtDate(r.batch_date)} — Numbers Found`)} />
+                  <NC n={r.not_found} base={r.scraped} label="scraped" onClick={() => open('not_found', r.batch_date, `${fmtDate(r.batch_date)} — Not Found`)} />
+                  <NC n={r.recruiters_excluded} base={r.scraped} label="scraped" onClick={() => open('recruiters_excluded', r.batch_date, `${fmtDate(r.batch_date)} — Recruiters Excluded`)} />
+                  <RateTd n={r.numbers_found} d={r.scraped} />
+                </tr>
+              ))}
+              <tr className="bg-gray-100 border-t-2 border-gray-200">
+                <td className="px-4 py-2.5 text-xs font-bold text-gray-700">Grand total</td>
+                <NC n={totals.scraped} onClick={() => open('scraped', null, 'Grand Total — Scraped')} />
+                <NC n={totals.numbers_found} base={totals.scraped} label="scraped" onClick={() => open('numbers_found', null, 'Grand Total — Numbers Found')} />
+                <NC n={totals.not_found} base={totals.scraped} label="scraped" onClick={() => open('not_found', null, 'Grand Total — Not Found')} />
+                <NC n={totals.recruiters_excluded} base={totals.scraped} label="scraped" onClick={() => open('recruiters_excluded', null, 'Grand Total — Recruiters Excluded')} />
+                <RateTd n={totals.numbers_found} d={totals.scraped} />
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {drill && <DrillModal drill={drill} onClose={() => setDrill(null)} />}
+    </>
   )
 }
 
@@ -418,10 +495,19 @@ function SectionHead({ icon, title, tag, bg }: { icon: string; title: string; ta
 function ClientWorkflow() {
   const [batchMode, setBatchMode] = useState<BM>('all')
   const [drill, setDrill] = useState<DrillState | null>(null)
+  const [cityFilter, setCityFilter] = useState<string>('')
+
+  const { data: cityRows } = useQuery({
+    queryKey: ['analytics-city-clients'],
+    queryFn: () => api.get('/analytics/city/clients').then(r => r.data.data as CityClientRow[]),
+    staleTime: 60_000,
+  })
+  const cityOptions = (cityRows ?? []).filter(r => r.city !== 'unknown').sort((a, b) => b.lead_count - a.lead_count)
+  const unclassifiedCount = (cityRows ?? []).find(r => r.city === 'unknown')?.lead_count ?? 0
 
   const { data: rawRows, isLoading } = useQuery({
-    queryKey: ['analytics-client-breakdown'],
-    queryFn: () => api.get('/analytics/new/clients/breakdown').then(r => r.data.data as ClientRow[]),
+    queryKey: ['analytics-client-breakdown', cityFilter],
+    queryFn: () => api.get('/analytics/new/clients/breakdown', { params: { city: cityFilter || undefined } }).then(r => r.data.data as ClientRow[]),
   })
   const { data: checklist } = useQuery({
     queryKey: ['analytics-batch-checklist'],
@@ -429,12 +515,31 @@ function ClientWorkflow() {
     staleTime: 60_000,
   })
 
-  if (isLoading) return <Spinner />
+  const citySelector = (
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-gray-500 font-medium">City</span>
+      <select
+        value={cityFilter}
+        onChange={e => setCityFilter(e.target.value)}
+        className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 font-medium"
+      >
+        <option value="">All cities</option>
+        {cityOptions.map(c => (
+          <option key={c.city} value={c.city}>{c.city} ({c.lead_count})</option>
+        ))}
+      </select>
+      {unclassifiedCount > 0 && (
+        <span className="text-[10px] text-gray-400">{unclassifiedCount} clients not yet geocoded</span>
+      )}
+    </div>
+  )
+
+  if (isLoading) return <>{citySelector}<Spinner /></>
   const rows = rawRows ?? []
-  if (!rows.length) return <div className="flex items-center justify-center h-40 bg-gray-50 rounded-xl border border-dashed border-gray-200"><p className="text-sm text-gray-400">No client outreach data yet</p></div>
+  if (!rows.length) return <div className="space-y-3">{citySelector}<div className="flex items-center justify-center h-40 bg-gray-50 rounded-xl border border-dashed border-gray-200"><p className="text-sm text-gray-400">No client outreach data{cityFilter ? ` for ${cityFilter}` : ''} yet</p></div></div>
 
   const open = (col: string, batch_date: string | null, sub_type: string | null, title: string) =>
-    setDrill({ entity: 'clients', col, batch_date, sub_type, title })
+    setDrill({ entity: 'clients', col, batch_date, sub_type, title, city: cityFilter || null })
 
   const batchMap = groupBy(rows)
   const batchDates = Array.from(batchMap.keys()) // newest first from API
@@ -501,6 +606,7 @@ function ClientWorkflow() {
       <div className="flex flex-wrap items-center gap-3 px-4 py-3 bg-white border border-gray-200 rounded-xl">
         <span className="text-xs text-gray-500 font-medium">Batches</span>
         <BatchToggle value={batchMode} onChange={setBatchMode} />
+        <div className="ml-2 pl-3 border-l border-gray-200">{citySelector}</div>
         <span className="ml-2 text-xs text-gray-400 flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-blue-400 inline-block" />
           Click any number to open the client list at that stage
@@ -562,6 +668,12 @@ function ClientWorkflow() {
           </span>
         ))}
         <span className="text-xs text-gray-400 ml-1">Heat = likelihood the client is actively hiring</span>
+      </div>
+
+      {/* Scrape → Enrich funnel */}
+      <div>
+        <SectionHead icon="🔍" title="Lead Scraping — Numbers Found" tag="batched by day scraped · before any reachout" bg="bg-teal-100 text-teal-700" />
+        <ScrapeFunnelTable />
       </div>
 
       {/* Funnel */}
@@ -879,12 +991,117 @@ function MatchmakingWorkflow() {
   )
 }
 
+// ── CityWorkflow ──────────────────────────────────────────────────────────────
+
+interface CityClientRow {
+  city: string; lead_count: number; onboarded_count: number
+  disqualified_count: number; clients_with_placement: number
+}
+
+interface CityCandidateRow {
+  city: string; pool_size: number; pass_count: number; fail_count: number
+  pass_rate: number; active_count: number; placed_count: number
+}
+
+function CityWorkflow() {
+  const { data: clientRows, isLoading: loadingClients } = useQuery({
+    queryKey: ['analytics-city-clients'],
+    queryFn: () => api.get('/analytics/city/clients').then(r => r.data.data as CityClientRow[]),
+  })
+  const { data: candidateRows, isLoading: loadingCandidates } = useQuery({
+    queryKey: ['analytics-city-candidates'],
+    queryFn: () => api.get('/analytics/city/candidates').then(r => r.data.data as CityCandidateRow[]),
+  })
+
+  if (loadingClients || loadingCandidates) return <Spinner />
+
+  const clients = clientRows ?? []
+  const candidates = candidateRows ?? []
+
+  if (!clients.length && !candidates.length) {
+    return <div className="flex items-center justify-center h-40 bg-gray-50 rounded-xl border border-dashed border-gray-200"><p className="text-sm text-gray-400">No city data yet</p></div>
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <SectionHead icon="🏙️" title="Clients by City" tag="lead → onboarded funnel, sliced by client city" bg="bg-blue-100 text-blue-700" />
+        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs min-w-[640px]">
+              <thead>
+                <tr className="bg-gray-50 border-b border-gray-200">
+                  <th className="px-4 py-3 text-left text-gray-500 font-semibold uppercase tracking-wider">City</th>
+                  <th className="px-3 py-3 text-center text-gray-500 font-semibold uppercase tracking-wider">Leads</th>
+                  <th className="px-3 py-3 text-center text-green-600 font-semibold uppercase tracking-wider">Onboarded</th>
+                  <th className="px-3 py-3 text-center text-red-500 font-semibold uppercase tracking-wider">Disqualified</th>
+                  <th className="px-3 py-3 text-center text-purple-600 font-semibold uppercase tracking-wider">Clients w/ Placement</th>
+                </tr>
+              </thead>
+              <tbody>
+                {clients.map(r => (
+                  <tr key={r.city} className="hover:bg-gray-50/60 border-b border-gray-100">
+                    <td className="px-4 py-2.5 font-medium text-gray-700">{r.city}</td>
+                    <td className="px-3 py-2.5 text-center">{r.lead_count}</td>
+                    <td className="px-3 py-2.5 text-center">{r.onboarded_count}</td>
+                    <td className="px-3 py-2.5 text-center">{r.disqualified_count}</td>
+                    <td className="px-3 py-2.5 text-center">{r.clients_with_placement}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <SectionHead icon="👤" title="Candidates by City" tag="pool depth, evaluation pass rate & placements, sliced by candidate city" bg="bg-amber-100 text-amber-700" />
+        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs min-w-[720px]">
+              <thead>
+                <tr className="bg-gray-50 border-b border-gray-200">
+                  <th className="px-4 py-3 text-left text-gray-500 font-semibold uppercase tracking-wider">City</th>
+                  <th className="px-3 py-3 text-center text-gray-500 font-semibold uppercase tracking-wider">Pool Size</th>
+                  <th className="px-3 py-3 text-center text-green-600 font-semibold uppercase tracking-wider">Pass</th>
+                  <th className="px-3 py-3 text-center text-red-500 font-semibold uppercase tracking-wider">Fail</th>
+                  <th className="px-3 py-3 text-center text-gray-500 font-semibold uppercase tracking-wider">Pass Rate %</th>
+                  <th className="px-3 py-3 text-center text-blue-600 font-semibold uppercase tracking-wider">Active</th>
+                  <th className="px-3 py-3 text-center text-purple-600 font-semibold uppercase tracking-wider">Placed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {candidates.map(r => (
+                  <tr key={r.city} className="hover:bg-gray-50/60 border-b border-gray-100">
+                    <td className="px-4 py-2.5 font-medium text-gray-700">{r.city}</td>
+                    <td className="px-3 py-2.5 text-center">{r.pool_size}</td>
+                    <td className="px-3 py-2.5 text-center">{r.pass_count}</td>
+                    <td className="px-3 py-2.5 text-center">{r.fail_count}</td>
+                    <td className="px-3 py-2.5 text-center">{r.pass_rate}%</td>
+                    <td className="px-3 py-2.5 text-center">{r.active_count}</td>
+                    <td className="px-3 py-2.5 text-center">{r.placed_count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <p className="text-xs text-gray-400 border-t border-gray-100 pt-3">
+        <b>City</b> is derived from geocoded addresses (client job location / candidate current location) — rows with no geocoded address yet show as <b>unknown</b>. Activating a new city for lead sourcing is a data change (an <code>active_cities</code> row), not a code change.
+      </p>
+    </div>
+  )
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 const TABS = [
   { id: 'clients',     label: 'Client Workflow',    sub: 'Batch-wise acquisition funnel · broken down by client sub-type' },
   { id: 'candidates',  label: 'Candidate Workflow',  sub: 'Batch-wise sourcing funnel · vetting · classification' },
   { id: 'matchmaking', label: 'Matchmaking',          sub: 'Per-client pool depth, recruitment speed & interview output' },
+  { id: 'city',        label: 'City Breakdown',      sub: 'Client and candidate funnels, sliced by city' },
 ] as const
 
 type TabId = typeof TABS[number]['id']
@@ -910,6 +1127,7 @@ export default function AdminAnalyticsPage() {
       {tab === 'clients'     && <ClientWorkflow />}
       {tab === 'candidates'  && <CandidateWorkflow />}
       {tab === 'matchmaking' && <MatchmakingWorkflow />}
+      {tab === 'city'        && <CityWorkflow />}
     </div>
   )
 }

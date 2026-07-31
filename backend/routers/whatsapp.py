@@ -113,6 +113,29 @@ async def msg91_event(request: Request, background_tasks: BackgroundTasks):
     return {"status": "ok"}
 
 
+@router.post("/msg91-click-event")
+async def msg91_click_event(request: Request, background_tasks: BackgroundTasks):
+    """
+    Dedicated endpoint for MSG91's URL-click webhook (Dashboard → WhatsApp →
+    Webhook (New) → CLICKED event) — a different payload shape from
+    /msg91-event, fired when a recipient taps a URL-type template button.
+    Currently only relevant to hl_cand_jd_img_v3 (Interested Role / Not
+    Interested Role are URL buttons, not quick-replies — see
+    services/msg91_service.py). Set this URL as the CLICKED event's webhook.
+
+    Payload fields used:
+      requestId      — MSG91 request id (not reliably our stored meta_msg_id
+                       for bulk JD sends — phone is the fallback correlator,
+                       same as delivery-status matching in _process_msg91_event)
+      customerNumber — recipient phone
+      link           — the real destination URL that was clicked (distinguishes
+                       Interested Role /apply from Not Interested Role /p-apply)
+    """
+    payload = await request.json()
+    background_tasks.add_task(_process_msg91_click_event, payload)
+    return {"status": "ok"}
+
+
 def _phones_for_client(client) -> list[str]:
     """Return all unique phone numbers for a client (from phone_numbers array, falling back to poc_phone)."""
     import json as _j
@@ -156,75 +179,59 @@ async def _is_new_contact(conn: asyncpg.Connection, from_phone: str) -> bool:
 async def _handle_candidate_reply(
     conn: asyncpg.Connection, from_phone: str, text: str, button_payload: str | None = None
 ):
-    # ── Greeting / YES flow for first-time unknown contacts ───────────────────
-    # ── Greeting button tap (YES_INBOUND payload) ─────────────────────────────
-    if button_payload == "YES_INBOUND":
-        from services import flow_engine as _fe
-        import asyncio as _asyncio
-        try:
-            await _fe._send_onboarding_link(from_phone, "INTERESTED")
-            await _asyncio.sleep(10)
-            await _fe._send_intro_video(from_phone)
-        except Exception as e:
-            print(f"[webhook] candidate onboarding link/video (button) failed for {from_phone}: {e}")
-        return
-
     if not button_payload:
         known = await conn.fetchval(
             "SELECT 1 FROM candidates WHERE phone = ANY($1::text[]) LIMIT 1",
             _phone_variants(from_phone),
         )
-        if not known:
-            # Always send greeting with button to unknown contacts
-            greeting_text = (
-                "Hi! 👋 Thanks for reaching out to JustAccountants.\n\n"
-                "We help accounting professionals find great job opportunities across India.\n\n"
-                "Are you currently looking for a job?"
-            )
-            try:
-                await msg91.send_interactive_buttons(
-                    from_phone,
-                    greeting_text,
-                    [{"id": "YES_INBOUND", "title": "Yes, I'm looking!"}],
-                    sender="candidate",
+
+        if known:
+            # ── Payload-less button tap (MSG91 sometimes omits payload on 3-button templates) ──
+            # Derive trigger from button text and apply to ALL active intent_ask mappings.
+            text_upper = (text or "").upper()
+            if "NOT LOOKING" in text_upper:
+                fallback_trigger = "NOT_LOOKING_FOR_JOB"
+            elif "NOT INTERESTED" in text_upper:
+                fallback_trigger = "NOT_INTERESTED_ROLE"
+            elif "INTERESTED" in text_upper:
+                fallback_trigger = "INTERESTED"
+            else:
+                fallback_trigger = None
+
+            if fallback_trigger:
+                active_mappings = await conn.fetch(
+                    """
+                    SELECT ccm.id AS mapping_id, ccm.stage
+                    FROM client_candidate_mappings ccm
+                    JOIN candidates c ON c.id = ccm.candidate_id
+                    WHERE c.phone = ANY($1::text[])
+                      AND ccm.stage IN ('intent_ask', 'interested')
+                    ORDER BY ccm.updated_at DESC
+                    """,
+                    _phone_variants(from_phone),
                 )
-            except Exception as e:
-                print(f"[webhook] candidate greeting failed for {from_phone}: {e}")
-            return
+                print(f"[webhook] payload-less button: trigger={fallback_trigger} phone={from_phone} mappings={len(active_mappings)}")
+                for m in active_mappings:
+                    try:
+                        executed = await flow_engine.execute_candidate_flow(
+                            conn, m["mapping_id"], m["stage"], fallback_trigger, from_phone
+                        )
+                        print(f"[webhook] payload-less flow executed={executed} mapping={m['mapping_id']}")
+                    except Exception as e:
+                        print(f"[webhook] payload-less flow error mapping={m['mapping_id']}: {e}")
+                return
 
-        # ── Payload-less button tap (MSG91 sometimes omits payload on 3-button templates) ──
-        # Derive trigger from button text and apply to ALL active intent_ask mappings.
-        text_upper = (text or "").upper()
-        if "NOT LOOKING" in text_upper:
-            fallback_trigger = "NOT_LOOKING_FOR_JOB"
-        elif "NOT INTERESTED" in text_upper:
-            fallback_trigger = "NOT_INTERESTED_ROLE"
-        elif "INTERESTED" in text_upper:
-            fallback_trigger = "INTERESTED"
-        else:
-            fallback_trigger = None
-
-        if fallback_trigger:
-            active_mappings = await conn.fetch(
-                """
-                SELECT ccm.id AS mapping_id, ccm.stage
-                FROM client_candidate_mappings ccm
-                JOIN candidates c ON c.id = ccm.candidate_id
-                WHERE c.phone = ANY($1::text[])
-                  AND ccm.stage IN ('intent_ask', 'interested')
-                ORDER BY ccm.updated_at DESC
-                """,
-                _phone_variants(from_phone),
-            )
-            print(f"[webhook] payload-less button: trigger={fallback_trigger} phone={from_phone} mappings={len(active_mappings)}")
-            for m in active_mappings:
-                try:
-                    executed = await flow_engine.execute_candidate_flow(
-                        conn, m["mapping_id"], m["stage"], fallback_trigger, from_phone
-                    )
-                    print(f"[webhook] payload-less flow executed={executed} mapping={m['mapping_id']}")
-                except Exception as e:
-                    print(f"[webhook] payload-less flow error mapping={m['mapping_id']}: {e}")
+        # Free text that didn't match a deterministic keyword — a known candidate
+        # asking something, or a first-time prospective contact. Replaces the old
+        # static "Hi! Thanks for reaching out" greeting, which resent identical
+        # text on every message from an unrecognised number with no memory of
+        # what was already said. Gated by CANDIDATE_AI_RM_ENABLED and, for known
+        # candidates, candidates.ai_rm_enabled — see services/ai_rm_service.py.
+        from services import ai_rm_service as _ai_rm
+        try:
+            await _ai_rm.handle_free_text(conn, from_phone, text)
+        except Exception as e:
+            print(f"[webhook] ai_rm handle_free_text failed for {from_phone}: {e}")
         return
 
     # ── Path 1: button payload with embedded mapping_id ────────────────────────
@@ -293,8 +300,6 @@ async def _handle_candidate_reply(
                 except Exception as e:
                     print(f"[webhook] no-pipe flow error mapping={m['mapping_id']}: {e}")
         return
-
-    # Plain-text replies are ignored — flow only advances on button taps.
 
 
 async def _send_onboarding_link(phone: str, client_id: str = "") -> None:
@@ -405,12 +410,30 @@ async def _post_agree_actions(conn, client_id) -> None:
         else:
             print(f"[agree] no eligible RM found for client {client_id}")
 
+    # Auto-trigger matchmaking + search-started message — this is the only
+    # code path shared by every way a client can reach 'onboarded' (WhatsApp
+    # AGREED button, web agreement page, and the admin PATCH /stage endpoint
+    # which schedules these itself). Without this, clients onboarded via the
+    # WhatsApp/web agreement flows never got decision-point run for them.
+    from routers.clients import _run_auto_match, _send_search_started
+    asyncio.create_task(_run_auto_match(str(client_id)))
+    asyncio.create_task(_send_search_started(str(client_id)))
+
 
 async def _dnd_single_phone(conn: asyncpg.Connection, client_id, phone: str) -> None:
     """
     Opt out a single phone number from a client.
-    Removes it from phone_numbers[] and poc_phone, adds to dnd_phones[].
-    Only sets is_dnd=true + disqualifies the client if no phones remain.
+    Removes it from the active phone_numbers[] list (so automated resends skip
+    it) and adds it to dnd_phones[]. poc_phone is only ever reassigned to a
+    surviving number — never cleared — so the contact stays visible on the
+    client record even once every number has opted out. is_dnd (and stage,
+    once no numbers remain) is what actually blocks future messaging: every
+    automated reachout/follow-up query filters on is_dnd = false, and the two
+    manual single-send endpoints check is_dnd explicitly.
+
+    phone_numbers entries may be either plain phone strings (written by the
+    enrichment cron) or {"number": ..., ...} dicts (written by the onboarding/
+    agreement flows) — both shapes are handled here.
     """
     await conn.execute(
         "ALTER TABLE clients ADD COLUMN IF NOT EXISTS dnd_phones jsonb DEFAULT '[]'::jsonb"
@@ -428,28 +451,47 @@ async def _dnd_single_phone(conn: asyncpg.Connection, client_id, phone: str) -> 
     if phone_10.startswith("91") and len(phone_10) == 12:
         phone_10 = phone_10[2:]
 
+    def _entry_number(p) -> str | None:
+        if isinstance(p, dict):
+            return p.get("number")
+        if isinstance(p, str):
+            return p
+        return None
+
+    def _matches(num: str | None) -> bool:
+        return bool(num) and re.sub(r"\D", "", num)[-10:] == phone_10
+
     raw = client["phone_numbers"]
-    current_phones: list[str] = (raw if isinstance(raw, list) else _json.loads(raw)) if raw else []
+    current_entries = (raw if isinstance(raw, list) else _json.loads(raw)) if raw else []
+    if not isinstance(current_entries, list):
+        current_entries = []
 
     raw_dnd = client["dnd_phones"]
     dnd_phones: list[str] = (raw_dnd if isinstance(raw_dnd, list) else _json.loads(raw_dnd)) if raw_dnd else []
 
-    # Remove opting-out number from active list
-    remaining = [
-        p for p in current_phones
-        if re.sub(r"\D", "", p)[-10:] != phone_10
-    ]
+    # Remove opting-out number from the active list (preserving each entry's original shape)
+    remaining_entries = [p for p in current_entries if not _matches(_entry_number(p))]
+    remaining_numbers = [n for n in (_entry_number(p) for p in remaining_entries) if n]
 
     # Track in dnd_phones
     if phone_10 not in dnd_phones:
         dnd_phones.append(phone_10)
 
-    # If poc_phone matches, clear it or promote first remaining
-    new_poc = client["poc_phone"]
-    if new_poc and re.sub(r"\D", "", new_poc)[-10:] == phone_10:
-        new_poc = remaining[0] if remaining else None
+    old_poc = client["poc_phone"]
+    was_poc = _matches(old_poc)
 
-    no_phones_left = not remaining and not new_poc
+    if was_poc and remaining_numbers:
+        promoted_poc = remaining_numbers[0]
+    elif was_poc:
+        promoted_poc = None  # no active number left to promote
+    else:
+        promoted_poc = old_poc
+
+    no_phones_left = not remaining_numbers and not promoted_poc
+
+    # Never actually blank poc_phone — fall back to the last known number so
+    # it stays visible on the client record even when fully opted out.
+    new_poc = promoted_poc if promoted_poc is not None else old_poc
 
     await conn.execute(
         """
@@ -464,7 +506,7 @@ async def _dnd_single_phone(conn: asyncpg.Connection, client_id, phone: str) -> 
         WHERE id = $1
         """,
         client_id,
-        _json.dumps(remaining),
+        _json.dumps(remaining_entries),
         new_poc,
         _json.dumps(dnd_phones),
         no_phones_left,
@@ -473,7 +515,7 @@ async def _dnd_single_phone(conn: asyncpg.Connection, client_id, phone: str) -> 
     if no_phones_left:
         print(f"[dnd] client {client_id} fully DND'd — no phones remaining after {phone_10} opted out")
     else:
-        print(f"[dnd] phone {phone_10} opted out from client {client_id} — {len(remaining)} phone(s) remain")
+        print(f"[dnd] phone {phone_10} opted out from client {client_id} — {len(remaining_numbers)} phone(s) remain")
 
 
 _BOT_KEYWORDS = frozenset([
@@ -609,6 +651,14 @@ async def _handle_client_reply(
         if flagged:
             return
 
+    # ── Simple client support bot — issue/stuck-reason button flow ───────────
+    # Keyed purely off button id, so it's checked before anything else that
+    # branches on button_payload. See services/client_support_bot.py.
+    if button_payload:
+        from services import client_support_bot
+        if await client_support_bot.handle_button(conn, from_phone, button_payload, text):
+            return
+
     # ── Greeting / YES flow for first-time unknown contacts ───────────────────
     if not button_payload:
         known = await conn.fetchval(
@@ -657,7 +707,10 @@ async def _handle_client_reply(
                     print(f"[webhook] client onboarding link failed for {from_phone}: {e}")
                 return
             else:
-                # Unknown contact typed something else — nudge them
+                # Unknown contact typed something else (not "yes", not their
+                # first message) — not a client yet, so the support-bot's
+                # "are you facing any issues with the process?" doesn't fit;
+                # just nudge them toward the YES flow.
                 try:
                     await msg91.send_text(
                         from_phone,
@@ -862,36 +915,198 @@ async def _handle_client_reply(
         return
 
     stage = client["stage"]
-    text_norm = text.strip().lower()
 
-    if stage == "agreement_sent" and text_norm in ("yes", "y", "haan", "ok", "okay", "agree", "agreed"):
-        await conn.execute(
-            "UPDATE clients SET stage = 'onboarded'::client_stage, updated_at = now() WHERE id = $1",
-            client["id"],
-        )
+    # Deliberately no text-"yes"/"ok" onboarding shortcut here — a client can
+    # only move to 'onboarded' by pressing Agree on the actual agreement page
+    # or the WhatsApp template's Agree button (routers/clients.py agree_to_
+    # agreement, and the AGREED button handler above). Free text at
+    # agreement_sent stage — including "yes"/"ok" — falls through to the
+    # advisory AI agent below, which can nudge them back to the real link
+    # without ever mutating stage itself.
+
+    # Known client, free text that didn't match any deterministic flow above
+    # (e.g. a question, or something they're stuck on, sent at any stage other
+    # than the specific agreement-confirmation moment handled just above).
+    #
+    # Onboarded clients get the simple deterministic support bot (issue/stuck-
+    # reason button flow — see services/client_support_bot.py). Clients still
+    # earlier in the pipeline (lead/scraping/.../agreement_sent, and terminal
+    # churned/disqualified) get the advisory-only AI agent instead — see
+    # services/ai_client_rm_service.py.
+    if stage == "onboarded":
+        from services import client_support_bot
         try:
-            phone = next((v for v in variants if len(v) == 10), variants[0])
-            frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
-            schedule_url = f"{frontend_url}/schedule/{client['id']}"
-            slot_template = os.environ.get("CLIENT_SLOT_TEMPLATE", "").strip()
-            if slot_template:
-                components = [{"type": "body", "parameters": [{"type": "text", "text": schedule_url}]}]
-                await msg91.send_template(phone, slot_template, "en", components, sender="client")
-            else:
-                await msg91.send_text(
-                    phone,
-                    f"Great! Your agreement has been confirmed.\n\nPlease select your preferred interview slots:\n{schedule_url}",
-                    sender="client",
+            await client_support_bot.handle_free_text(conn, from_phone, text)
+        except Exception as e:
+            print(f"[webhook] client_support_bot handle_free_text failed for {from_phone}: {e}")
+    else:
+        from services import ai_client_rm_service as _ai_client_rm
+        try:
+            await _ai_client_rm.handle_free_text(conn, from_phone, text)
+        except Exception as e:
+            print(f"[webhook] ai_client_rm handle_free_text failed for {from_phone}: {e}")
+
+
+async def _process_client_reachout_click(link: str, recipient: str) -> None:
+    """
+    client_reachout_3's "View Profile" URL button was clicked — same outcome
+    as the old client_reachout_2 quick-reply "View Profiles" tap (see Path 1b
+    in _handle_client_reply): move the client to 'interested', record which
+    phone number they clicked from as the agreed one. No onboarding-link text
+    follow-up needed — the click itself already lands them on the form.
+
+    The button is approved as a DYNAMIC url (see _send_client_reachout_step),
+    so the link carries client_id in ?ref= — that's the primary lookup path.
+    The phone + used_template_name fallback below only matters if ref is ever
+    missing or malformed.
+    """
+    import json as _json
+    import re as _re
+    from urllib.parse import urlparse, parse_qs
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        try:
+            client_id = None
+            ref = parse_qs(urlparse(link).query).get("ref", [None])[0]
+            if ref:
+                try:
+                    client_id = uuid.UUID(ref)
+                except ValueError:
+                    client_id = None
+
+            variants = _phone_variants(recipient)
+            phone_10 = next((v for v in variants if len(v) == 10), recipient)
+
+            if client_id:
+                client = await conn.fetchrow(
+                    "SELECT id, phone_numbers FROM clients WHERE id = $1", client_id
                 )
-        except Exception:
-            pass
+            else:
+                # Fallback: no/invalid ref — match by phone against the most
+                # recent client_reachout_3 send, same reasoning as the JD v3
+                # phone-based fallback above.
+                client = await conn.fetchrow(
+                    """
+                    SELECT c.id, c.phone_numbers
+                    FROM whatsapp_messages wm
+                    JOIN clients c ON c.id = wm.client_id
+                    WHERE RIGHT(wm.phone, 10) = RIGHT($1, 10)
+                      AND wm.used_template_name = 'client_reachout_3'
+                      AND wm.direction = 'outbound'
+                    ORDER BY wm.sent_at DESC LIMIT 1
+                    """,
+                    recipient,
+                )
+
+            if not client:
+                print(f"[msg91-click] no matching client_reachout_3 client for ref={ref!r} recipient={recipient!r}")
+                return
+
+            _raw = client["phone_numbers"] or []
+            if isinstance(_raw, str):
+                try: _raw = _json.loads(_raw)
+                except Exception: _raw = []
+            updated_phones = [{**p, "agreed": p.get("number") == phone_10} for p in _raw if isinstance(p, dict)]
+
+            await conn.execute(
+                """
+                UPDATE clients
+                SET stage        = 'interested'::client_stage,
+                    agreed_phone = $1,
+                    poc_phone    = $1,
+                    phone_numbers = $2::jsonb,
+                    updated_at   = now()
+                WHERE id = $3 AND stage = 'reachout_sent'::client_stage
+                """,
+                phone_10, _json.dumps(updated_phones), client["id"],
+            )
+            print(f"[msg91-click] client_reachout_3 View Profile clicked — client {client['id']} → interested")
+        except Exception as e:
+            print(f"[msg91-click] client_reachout_3 click error: {e}")
+
+
+async def _process_msg91_click_event(payload: dict):
+    """
+    Process a MSG91 CLICKED event for URL-type template buttons — no
+    quick-reply payload exists for these, so this webhook is the only signal
+    WhatsApp gives us for a tap. Covers two unrelated flows, dispatched by the
+    clicked link's path:
+      • hl_cand_jd_img_v3 (candidate side): Interested Role → /apply, Not
+        Interested Role → /p-apply — dispatches through flow_engine, same as
+        the old quick-reply buttons (see Path 1 in _handle_candidate_reply).
+      • client_reachout_3 (client side): View Profile → /client-onboard —
+        advances the client straight to 'interested', same as the old
+        quick-reply "View Profiles" handling (see Path 1b in
+        _handle_client_reply), but the URL carries client_id in ?ref= so no
+        phone-based lookup is needed for the primary path.
+    """
+    import re as _re
+
+    print(f"[msg91-click] RAW: {_json.dumps(payload, default=str)}")
+
+    link = (payload.get("link") or "").strip()
+    recipient = _re.sub(r'\D', '', payload.get("customerNumber") or "")
+    if len(recipient) == 12 and recipient.startswith("91"):
+        recipient = recipient[2:]
+
+    if not link or not recipient:
+        print(f"[msg91-click] missing link or recipient — link={link!r} recipient={recipient!r}")
         return
 
+    if "/client-onboard" in link:
+        await _process_client_reachout_click(link, recipient)
+        return
+
+    if "/p-apply" in link:
+        trigger = "NOT_INTERESTED_ROLE"
+    elif "/apply" in link:
+        trigger = "INTERESTED"
+    else:
+        print(f"[msg91-click] unrecognised link, ignoring: {link}")
+        return
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        try:
+            # Phone-based fallback match, same reasoning as delivery-status
+            # matching below — bulk JD sends never get a stored meta_msg_id.
+            row = await conn.fetchrow(
+                """
+                SELECT mapping_id FROM whatsapp_messages
+                WHERE RIGHT(phone, 10) = RIGHT($1, 10)
+                  AND used_template_name = $2
+                  AND direction = 'outbound'
+                  AND mapping_id IS NOT NULL
+                ORDER BY sent_at DESC LIMIT 1
+                """,
+                recipient, msg91.JD_V3_TEMPLATE,
+            )
+            if not row or not row["mapping_id"]:
+                print(f"[msg91-click] no matching {msg91.JD_V3_TEMPLATE} send found for {recipient}")
+                return
+
+            mapping_id = row["mapping_id"]
+            mapping = await conn.fetchrow(
+                "SELECT stage FROM client_candidate_mappings WHERE id = $1", mapping_id
+            )
+            if not mapping:
+                print(f"[msg91-click] mapping not found: {mapping_id}")
+                return
+
+            phone_10 = recipient if len(recipient) == 10 else recipient[-10:]
+            print(f"[msg91-click] trigger={trigger} stage={mapping['stage']} mapping={mapping_id} link={link}")
+            executed = await flow_engine.execute_candidate_flow(
+                conn, mapping_id, mapping["stage"], trigger, phone_10
+            )
+            print(f"[msg91-click] flow executed={executed}")
+        except Exception as e:
+            print(f"[msg91-click] error: {e}")
 
 
 async def _process_msg91_event(payload: dict):
     """
-    Process a MSG91 delivery event (FAILED / DELIVERED / READ) for client_reachout_2/_new
+    Process a MSG91 delivery event (FAILED / DELIVERED / READ) for client_reachout_2/_3/_new
     and candidate JD-share / re-reachout templates (candidate_share_client_jd, hl_cand_re_r1-3).
 
     MSG91 payload fields:
@@ -920,7 +1135,6 @@ async def _process_msg91_event(payload: dict):
     code_match = _re.search(r'\b(13\d{4}|1[0-9]{5})\b', reason)
     error_code = int(code_match.group(1)) if code_match else 0
 
-    OPT_OUT_CODE  = 131049
     TRANSIENT_CODES = {130429, 133004, 131000, 131026, 131031, 133010}
 
     pool = get_pool()
@@ -934,13 +1148,13 @@ async def _process_msg91_event(payload: dict):
                 SELECT id, client_id, candidate_id, phone FROM whatsapp_messages
                 WHERE (meta_msg_id = $1 OR ($2 != '' AND RIGHT(phone, 10) = RIGHT($2, 10)))
                   AND used_template_name IN (
-                      'client_reachout_2', 'client_reachout_new',
-                      $3, 'hl_cand_re_r1', 'hl_cand_re_r2', 'hl_cand_re_r3'
+                      'client_reachout_2', 'client_reachout_3', 'client_reachout_new',
+                      $3, $4, $5, 'hl_cand_re_r1', 'hl_cand_re_r2', 'hl_cand_re_r3'
                   )
                   AND direction = 'outbound'
                 ORDER BY sent_at DESC LIMIT 1
                 """,
-                msg_uuid, recipient, _CANDIDATE_INTENT_TEMPLATE,
+                msg_uuid, recipient, _CANDIDATE_INTENT_TEMPLATE, msg91.JD_V3_TEMPLATE, msg91.FF_TEMPLATE,
             )
 
             if webhook_type in ("DELIVERED", "READ"):
@@ -973,20 +1187,13 @@ async def _process_msg91_event(payload: dict):
                     fail_status, row["id"],
                 )
 
-            # DND only applies to client reachout failures — candidate JD-share /
-            # re-reachout rows have client_id = NULL, so they're naturally excluded here
+            # Message status is already updated above; do NOT DND for any FAILED
+            # delivery, including 131049 — that code means Meta itself throttled
+            # delivery to protect the recipient from marketing-message overload
+            # (a cross-business per-user rate cap), not that the recipient opted
+            # out or rejected anything. It is not a client response.
             if row and row["client_id"]:
-                if error_code == OPT_OUT_CODE:
-                    # Phone-level opt-out — only DND this number, not the whole client
-                    await _dnd_single_phone(conn, row["client_id"], recipient)
-                    print(f"[msg91-event] opt-out → phone {recipient} DND'd for client {row['client_id']}")
-                else:
-                    # Permanent delivery failure (invalid number etc) — DND whole client
-                    await conn.execute(
-                        "UPDATE clients SET is_dnd = true, updated_at = now() WHERE id = $1",
-                        row["client_id"],
-                    )
-                    print(f"[msg91-event] error {error_code or reason[:40]} → DND client {row['client_id']} phone {recipient}")
+                print(f"[msg91-event] error {error_code or reason[:40]} → delivery failed for client {row['client_id']} phone {recipient} (not DND'd)")
             else:
                 print(f"[msg91-event] FAILED but no matching message row for uuid={msg_uuid} phone={recipient}")
 
@@ -999,9 +1206,10 @@ async def _handle_delivery_status(payload: dict, conn) -> bool:
     Handle MSG91 delivery status webhooks for client_reachout_2 only.
     Returns True if this was a delivery status event (so caller can skip inbound handling).
 
-    On opt-out (error 131049): auto-set is_dnd=true on the client.
-    On permanent failure (invalid number): flag the client's phone as invalid.
-    Transient failures (rate limit, server error, phone off) are ignored — cron retries naturally.
+    FAILED deliveries only update the message status — they never DND the client.
+    131049 in particular is Meta's own marketing-frequency throttle, not a client
+    opt-out, so it must not be treated as one. Transient failures (rate limit,
+    server error, phone off) are ignored entirely — cron retries naturally.
     """
     import json as _json
 
@@ -1011,7 +1219,6 @@ async def _handle_delivery_status(payload: dict, conn) -> bool:
     # Shape C: MSG91 wraps Meta format { type:"status", ... }
 
     TRANSIENT_CODES = {130429, 133004, 131000, 131026, 131031, 133010}  # rate-limit, server down, generic, unreachable, WABA-level failure
-    OPT_OUT_CODE    = 131049
 
     import re as _re
 
@@ -1104,13 +1311,11 @@ async def _handle_delivery_status(payload: dict, conn) -> bool:
     if not row:
         return True  # not a client reachout — status already updated above, no DND needed
 
-    # Both opt-out and permanent failures → DND (no more reachouts)
-    await conn.execute(
-        "UPDATE clients SET is_dnd = true, updated_at = now() WHERE id = $1",
-        row["client_id"],
-    )
-    reason = "opt-out 131049" if error_int == OPT_OUT_CODE else f"permanent failure {error_int}"
-    print(f"[webhook/delivery] {reason} → auto-DND client {row['client_id']} phone {row['phone']}")
+    # Message status is already updated above; do NOT DND for any FAILED delivery,
+    # including 131049 — that code means Meta itself throttled delivery to protect
+    # the recipient from marketing-message overload (a cross-business per-user
+    # rate cap), not that the recipient opted out. It is not a client response.
+    print(f"[webhook/delivery] failure {error_int} → client {row['client_id']} phone {row['phone']} (not DND'd)")
 
     return True
 
@@ -1149,15 +1354,16 @@ async def _process_webhook(payload: dict):
                 button_payload = btn.get("payload", "").strip() or None
                 text = btn.get("text", "").strip()
             elif content_type == "interactive":
-                # Interactive reply button tap — extract button id as payload
+                # Interactive reply — either a reply-button tap (button_reply)
+                # or a list-message row tap (list_reply); extract id as payload.
                 interactive = payload.get("interactive") or {}
                 if not interactive:
                     msgs = payload.get("messages", [])
                     if msgs:
                         interactive = msgs[0].get("interactive", {})
-                btn_reply = interactive.get("button_reply", {})
-                button_payload = btn_reply.get("id", "").strip() or None
-                text = btn_reply.get("title", "").strip()
+                reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
+                button_payload = reply.get("id", "").strip() or None
+                text = reply.get("title", "").strip()
             elif content_type == "text":
                 msgs = payload.get("messages", [])
                 if msgs:
@@ -1257,6 +1463,8 @@ async def send_client_reachout(
     client = await conn.fetchrow("SELECT * FROM clients WHERE id = $1", client_id)
     if not client:
         raise HTTPException(404, "Client not found")
+    if client["is_dnd"]:
+        raise HTTPException(400, "Client has opted out (DND) — cannot send")
 
     phones = _phones_for_client(client)
     if not phones:
@@ -1306,6 +1514,9 @@ async def send_client_bulk_reachout(
             if not client:
                 results.append({"client_id": cid_str, "ok": False, "error": "Not found"})
                 continue
+            if client["is_dnd"]:
+                results.append({"client_id": cid_str, "ok": False, "error": "Client has opted out (DND)"})
+                continue
 
             phones = _phones_for_client(client)
             if not phones:
@@ -1354,6 +1565,8 @@ async def send_client_agreement(
     client = await conn.fetchrow("SELECT * FROM clients WHERE id = $1", client_id)
     if not client:
         raise HTTPException(404, "Client not found")
+    if client["is_dnd"]:
+        raise HTTPException(400, "Client has opted out (DND) — cannot send")
     if not client["poc_phone"]:
         raise HTTPException(400, "Client has no POC phone number")
     if not client["agreement_url"]:
@@ -1482,6 +1695,16 @@ async def send_candidate_intent_bulk(
             raise HTTPException(500, f"JD card generation failed: {_img_err}")
 
     maps_url = _client_maps_url(dict(client))
+    area = client["job_location"] or client["location"] or ""
+    salary = str(int(client["max_salary"])) if client["max_salary"] else ""
+    # Form already filled → hl_cand_jd_share_2 (View Details straight into
+    # the portal dashboard). Form not yet filled → hl_cand_jd_img_v3 (URL
+    # buttons straight to /apply and /p-apply instead of quick-reply payloads).
+    # See services/msg91_service.py.
+    templates_by_mapping = {
+        str(r["id"]): (msg91.FF_TEMPLATE if r["candidate_form_submitted"] else msg91.JD_V3_TEMPLATE)
+        for r in rows
+    }
     candidates = [
         {
             "phone": msg91._format_phone(r["candidate_phone"]),
@@ -1492,6 +1715,11 @@ async def send_candidate_intent_bulk(
                 dict(client),
             ),
             "maps_url": maps_url,
+            "area": area,
+            "salary": salary,
+            "company_name": client["company_name"] or "",
+            "role": client["job_title"] or "",
+            "template_name": templates_by_mapping[str(r["id"])],
         }
         for r in rows
     ]
@@ -1512,7 +1740,7 @@ async def send_candidate_intent_bulk(
                 (candidate_id, mapping_id, message_type, direction, phone, status, sent_at, used_template_name)
             VALUES ($1, $2, 'candidate_intent_ask', 'outbound', $3, 'sent', now(), $4)
             """,
-            r["candidate_id"], r["id"], r["candidate_phone"], _CANDIDATE_INTENT_TEMPLATE,
+            r["candidate_id"], r["id"], r["candidate_phone"], templates_by_mapping[str(r["id"])],
         )
         await conn.execute("SELECT record_candidate_jd_sent($1, $2)", r["candidate_id"], r["id"])
         await conn.execute(

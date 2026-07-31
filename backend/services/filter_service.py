@@ -129,13 +129,13 @@ def filter_candidates(
                              "reason": "Employment type: JD is Full Time, candidate wants Part Time only"})
             continue
 
-        # Filter 3 — salary range (ceiling: max +15% buffer; floor: min -30% buffer)
+        # Filter 3 — salary range (ceiling: max, as-is; floor: min -30% buffer)
         cand_salary = c.get("current_salary")
         if cand_salary:
             cand_sal_f = float(cand_salary)
             if salary_cap and cand_sal_f > salary_cap:
                 rejected.append({"candidate_id": cid, "name": name,
-                                 "reason": f"Salary ceiling: candidate salary {cand_salary} > cap {salary_cap:.0f} (budget {max_salary} +15%)"})
+                                 "reason": f"Salary ceiling: candidate salary {cand_salary} > cap {salary_cap:.0f} (budget {max_salary})"})
                 continue
             if salary_floor_ and cand_sal_f < salary_floor_:
                 rejected.append({"candidate_id": cid, "name": name,

@@ -495,6 +495,27 @@ def _is_junior_role(job_title: str | None) -> bool:
     return "junior" in lower or "jr." in lower or lower.startswith("jr ")
 
 
+async def _send_portal_report_link(phone_91: str, cand_name: str) -> None:
+    """hl_cand_view_report_v1 — static URL button straight to the candidate
+    portal (no per-candidate suffix needed; candidates log in there via
+    phone + OTP), so they can view their evaluation report and all further
+    opportunities going forward."""
+    template = os.environ.get("CANDIDATE_EVAL_REPORT_LINK_TEMPLATE", "").strip()
+    if not template:
+        print(f"[ringg] CANDIDATE_EVAL_REPORT_LINK_TEMPLATE not configured — skipping portal link message for {phone_91} (pending template approval)")
+        return
+    components = [{"type": "body", "parameters": [{"type": "text", "text": cand_name}]}]
+    try:
+        await msg91.send_template(phone_91, template, "en", components, sender="candidate")
+    except Exception as e:
+        print(f"[ringg] portal report-link template '{template}' failed: {e}")
+        try:
+            from services.google_chat_service import send_alert
+            await send_alert("Portal report-link template send failed", str(e), severity="ERROR", context={"phone": phone_91})
+        except Exception:
+            pass
+
+
 async def _apply_evaluation_result(
     conn: asyncpg.Connection,
     cand_id,
@@ -502,96 +523,136 @@ async def _apply_evaluation_result(
     eval_status: str,
     category: str = "",
 ) -> None:
-    """Send WA and update mapping stages based on pass/fail/category."""
+    """Send WA and update mapping stages based on pass/fail/category.
 
-    # Fetch candidate name and client job_title from their interested mapping
+    On pass, behavior branches on which action the candidate originally took
+    (see the confirmed spec — hard filters now run AFTER the AI call, not
+    before it, and no longer gate whether the call fires at all):
+      - Has an 'interested'-stage mapping (tapped Interested Role on a specific
+        client's JD) → check that client's hard filters; pass → same as the
+        pre-evaluated-pass path in flow_engine._handle_interested_response:
+        lock candidate, mapping → client_approval_pending, waiting message
+        ("client is reviewing"); fail → decline_for_filter_mismatch with the
+        specific reason (CANDIDATE_NOT_FIT_CLIENT_REASON_TEMPLATE — pending
+        template approval, logs and skips the send until it's configured).
+      - No 'interested'-stage mapping (tapped Not Interested Role, or organic
+        with no mapping at all) → no client-specific check, generic "completed
+        technical round, will share matching opportunities" message
+        (CANDIDATE_EVAL_PASS_GENERIC_TEMPLATE — also pending approval).
+    On fail, behavior is unchanged from before this change.
+    """
+
     cand_row = await conn.fetchrow("SELECT name FROM candidates WHERE id = $1", cand_id)
     cand_name = (cand_row["name"] or "").split()[0] if cand_row and cand_row["name"] else "there"
 
-    client_row = await conn.fetchrow(
-        """
-        SELECT cl.job_title FROM client_candidate_mappings ccm
-        JOIN clients cl ON cl.id = ccm.client_id
-        WHERE ccm.candidate_id = $1 AND ccm.stage = 'interested'::mapping_stage
-        ORDER BY ccm.updated_at DESC LIMIT 1
-        """,
-        cand_id,
-    )
-    client_job_title = client_row["job_title"] if client_row else None
-
     is_pass = eval_status.lower() == "pass"
-    is_junior_category = (category or "").lower() == "junior accountant"
-    client_is_junior = _is_junior_role(client_job_title)
-
-    # Determine template + position label
-    if is_pass and not is_junior_category:
-        template_name = os.environ.get("CANDIDATE_EVAL_SR_PASS_TEMPLATE", "hl_cand_eval_sr_pass").strip()
-        position = "Sr. Accountant"
-    elif is_pass and is_junior_category and client_is_junior:
-        template_name = os.environ.get("CANDIDATE_EVAL_JR_PASS_TEMPLATE", "hl_cand_eval_jr_pass").strip()
-        position = "Jr. Accountant"
-    elif is_pass and is_junior_category and not client_is_junior:
-        template_name = "hl_cand_eval_satisfactory"
-        position = "Sr. Accountant"
-    else:
-        # Fail
-        template_name = "hl_cand_eval_fail"
-        position = "Jr. Accountant" if client_is_junior else "Sr. Accountant"
-
-    components = [{"type": "body", "parameters": [
-        {"type": "text", "text": cand_name},
-        {"type": "text", "text": position},
-    ]}]
-    try:
-        await msg91.send_template(phone_91, template_name, "en", components, sender="candidate")
-    except Exception as e:
-        print(f"[ringg] eval result template '{template_name}' failed: {e}")
-        try:
-            from services.google_chat_service import send_alert
-            await send_alert("Eval result template send failed", str(e), severity="ERROR", context={"phone": phone_91, "template": template_name, "cand_id": str(cand_id)})
-        except Exception:
-            pass
 
     if is_pass:
-        # Find all interested mappings with MMS ≥ 70 and send scheduling links
-        interested = await conn.fetch(
+        # A pass always supersedes any stale DND from an earlier failed
+        # attempt (see the fail branch below — interview_count > 1 means a
+        # prior call may have already set is_active=false + a 12-month DND).
+        # Without this, a candidate who fails once and later passes on retry
+        # stays permanently locked out even though they're now a confirmed pass.
+        await conn.execute(
+            "UPDATE candidates SET is_active = true, dnd_until = NULL, updated_at = now() WHERE id = $1",
+            cand_id,
+        )
+
+        from services.flow_engine import _check_hard_filters, decline_for_filter_mismatch
+
+        interested_mapping = await conn.fetchrow(
             """
-            SELECT ccm.id
+            SELECT ccm.id AS mapping_id, ccm.client_id
             FROM client_candidate_mappings ccm
-            LEFT JOIN mms_scores ms
-                ON ms.client_id = ccm.client_id AND ms.candidate_id = ccm.candidate_id
-            WHERE ccm.candidate_id = $1
-              AND ccm.stage = 'interested'::mapping_stage
-              AND COALESCE(ms.mms_score, 0) >= 70
+            WHERE ccm.candidate_id = $1 AND ccm.stage = 'interested'::mapping_stage
+            ORDER BY ccm.updated_at DESC LIMIT 1
             """,
             cand_id,
         )
 
-        frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5174")
-        slot_template = os.environ.get("CANDIDATE_SLOT_TEMPLATE", "").strip()
-
-        for m in interested:
-            mapping_id = m["id"]
-            schedule_url = f"{frontend_url}/candidate-schedule/{mapping_id}"
-            try:
-                if slot_template:
-                    components = [{"type": "body", "parameters": [{"type": "text", "text": schedule_url}]}]
-                    await msg91.send_template(phone_91, slot_template, "en", components, sender="candidate")
-                else:
-                    await msg91.send_text(
-                        phone_91,
-                        f"Here is your interview scheduling link:\n{schedule_url}",
-                        sender="candidate",
-                    )
-            except Exception as e:
-                print(f"[ringg] failed to send slot link for mapping {mapping_id}: {e}")
+        if interested_mapping:
+            ok, reason_code, reason = await _check_hard_filters(conn, interested_mapping["client_id"], cand_id)
+            if ok:
+                await conn.execute(
+                    """
+                    INSERT INTO candidate_locks (candidate_id, client_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT (candidate_id, client_id)
+                    DO UPDATE SET locked_at = now(), unlocked_at = NULL, unlock_reason = NULL
+                    """,
+                    cand_id, interested_mapping["client_id"],
+                )
+                await conn.execute(
+                    """
+                    UPDATE client_candidate_mappings
+                    SET stage = 'client_approval_pending'::mapping_stage, updated_at = now()
+                    WHERE id = $1
+                    """,
+                    interested_mapping["mapping_id"],
+                )
+                from routers.matching import _load_client, _send_waiting_message
+                client = await _load_client(interested_mapping["client_id"], conn)
+                await _send_waiting_message(
+                    interested_mapping["mapping_id"], cand_id, phone_91, cand_name, client, conn,
+                )
                 try:
-                    from services.google_chat_service import send_alert
-                    await send_alert("Slot link send failed after evaluation pass", str(e), severity="ERROR", context={"phone": phone_91, "mapping_id": str(mapping_id), "cand_id": str(cand_id)})
-                except Exception:
-                    pass
+                    from services.flow_engine import notify_client_pending_review
+                    await notify_client_pending_review(interested_mapping["client_id"], cand_name or "A candidate", conn)
+                except Exception as e:
+                    print(f"[ringg] client pending-review notify error for mapping {interested_mapping['mapping_id']}: {e}")
+            else:
+                print(f"[ringg] candidate {cand_id} passed AI eval but failed hard filter for client {interested_mapping['client_id']}: {reason}")
+                await decline_for_filter_mismatch(
+                    conn, interested_mapping["mapping_id"], cand_id, interested_mapping["client_id"], phone_91,
+                    reason_code, human_reason=reason,
+                )
+        else:
+            # Not Interested Role or organic — no specific client to filter against.
+            template = os.environ.get("CANDIDATE_EVAL_PASS_GENERIC_TEMPLATE", "").strip()
+            if template:
+                components = [{"type": "body", "parameters": [{"type": "text", "text": cand_name}]}]
+                try:
+                    await msg91.send_template(phone_91, template, "en", components, sender="candidate")
+                except Exception as e:
+                    print(f"[ringg] generic pass template '{template}' failed: {e}")
+                    try:
+                        from services.google_chat_service import send_alert
+                        await send_alert("Generic pass template send failed", str(e), severity="ERROR", context={"phone": phone_91, "cand_id": str(cand_id)})
+                    except Exception:
+                        pass
+            else:
+                print(f"[ringg] CANDIDATE_EVAL_PASS_GENERIC_TEMPLATE not configured — skipping pass message for candidate {cand_id} (pending template approval)")
 
     else:
+        # Fail — unchanged from before this change.
+        client_row = await conn.fetchrow(
+            """
+            SELECT cl.job_title FROM client_candidate_mappings ccm
+            JOIN clients cl ON cl.id = ccm.client_id
+            WHERE ccm.candidate_id = $1 AND ccm.stage = 'interested'::mapping_stage
+            ORDER BY ccm.updated_at DESC LIMIT 1
+            """,
+            cand_id,
+        )
+        client_job_title = client_row["job_title"] if client_row else None
+        client_is_junior = _is_junior_role(client_job_title)
+        position = "Jr. Accountant" if client_is_junior else "Sr. Accountant"
+
+        template_name = "hl_cand_eval_fail"
+        components = [{"type": "body", "parameters": [
+            {"type": "text", "text": cand_name},
+            {"type": "text", "text": position},
+        ]}]
+        try:
+            await msg91.send_template(phone_91, template_name, "en", components, sender="candidate")
+        except Exception as e:
+            print(f"[ringg] eval result template '{template_name}' failed: {e}")
+            try:
+                from services.google_chat_service import send_alert
+                await send_alert("Eval result template send failed", str(e), severity="ERROR", context={"phone": phone_91, "template": template_name, "cand_id": str(cand_id)})
+            except Exception:
+                pass
+
         # Move all interested mappings to not_interested
         await conn.execute(
             """
@@ -628,6 +689,13 @@ async def _apply_evaluation_result(
                 cand_id,
             )
             print(f"[ringg] candidate {cand_id} set to 1yr DND (failed, salary > 20k)")
+
+    # Portal link — sent on every completed call regardless of pass/fail or
+    # which client-match branch ran above. evaluation_summary (technical_scoring,
+    # percentage) is saved unconditionally before this function runs, so the
+    # coaching report on the portal is available either way — a fail is
+    # exactly who most needs to see "Where You Can Improve".
+    await _send_portal_report_link(phone_91, cand_name)
 
     # Always re-run matching decision point — evaluation changes the free pool
     try:

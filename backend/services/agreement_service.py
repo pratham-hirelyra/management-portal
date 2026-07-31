@@ -192,6 +192,7 @@ hr {{ border: none; border-top: 1px dashed #ccc; margin: 12px 0; }}
         of joining, one free replacement will be provided at no extra cost.
       </li>
       <li>No refund will be applicable once the candidate has joined. The replacement clause above is the sole remedy available to the Client.</li>
+      <li>If the Client terminates a candidate after joining, JustAccountants shall not be held liable for the free replacement.</li>
     </ul>
   </div>
 

@@ -41,13 +41,10 @@ def _clamp_low(val: float) -> float:
 
 
 def salary_ceiling(max_salary) -> float | None:
-    """client max_salary + 15% buffer, final result rounded to nearest thousand."""
+    """client max_salary, as-is — no buffer."""
     if not max_salary:
         return None
-    base = float(max_salary)
-    buffer = math.floor(base * 0.15 / 1000 + 0.5) * 1000
-    result = base + buffer
-    return math.floor(result / 1000 + 0.5) * 1000
+    return float(max_salary)
 
 
 def salary_floor(min_salary) -> float | None:
@@ -148,7 +145,9 @@ def _score_accountant(candidate: dict, client: dict, dist_km: float) -> dict:
     else:
         bts = 80.0
 
-    tech_score = float(candidate.get("technical_evaluation_score") or 0)
+    raw_tech_score = candidate.get("technical_evaluation_score")
+    evaluated = raw_tech_score is not None
+    tech_score = float(raw_tech_score or 0)
     current_salary = float(candidate.get("current_salary") or 0)
 
     technical_component = (tech_score / bts) * 70 if bts > 0 else 0
@@ -161,7 +160,12 @@ def _score_accountant(candidate: dict, client: dict, dist_km: float) -> dict:
     mms = technical_component + proximity_component + salary_component + skills_component
 
     ratio = tech_score / bts if bts > 0 else 0
-    if ratio >= 0.5:
+    if not evaluated:
+        # No AI screening score yet — never reject/DND for this alone, that
+        # punishes candidates who simply haven't taken their call.
+        classified_category = "pending_evaluation"
+        dnd_flagged = False
+    elif ratio >= 0.5:
         classified_category = "Senior Accountant"
         dnd_flagged = False
     elif current_salary <= 20_000:

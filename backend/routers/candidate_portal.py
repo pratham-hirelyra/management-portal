@@ -495,6 +495,8 @@ async def get_jobs(candidate_id: uuid.UUID, conn: asyncpg.Connection = Depends(g
 
 class RespondBody(BaseModel):
     action: str  # 'INTERESTED' | 'NOT_INTERESTED_ROLE' | 'NOT_LOOKING_FOR_JOB'
+    continue_anyway: bool = False  # INTERESTED only — resubmission after the
+    # candidate saw the hard-filter mismatch choice and chose to proceed anyway.
 
 
 @router.post("/{candidate_id}/jobs/{mapping_id}/respond")
@@ -513,7 +515,7 @@ async def respond_to_job(
 
     mapping = await conn.fetchrow(
         """
-        SELECT ccm.id, ccm.stage, c.phone
+        SELECT ccm.id, ccm.stage, ccm.client_id, ccm.candidate_id, c.phone, c.name, c.evaluation_status
         FROM client_candidate_mappings ccm
         JOIN candidates c ON c.id = ccm.candidate_id
         WHERE ccm.id = $1 AND ccm.candidate_id = $2
@@ -530,29 +532,75 @@ async def respond_to_job(
     import services.flow_engine as flow_engine
 
     phone = _format_phone(mapping["phone"] or "")
+
+    # Hard-filter pre-check for INTERESTED, so a mismatch surfaces as an
+    # interactive choice (update profile vs. continue anyway) instead of the
+    # silent auto-decline _handle_interested_response falls back to — that
+    # silent path stays in place for the WhatsApp-triggered reply, which has
+    # no UI to show a choice in.
+    if body.action == "INTERESTED":
+        ok, reason_code, reason = await flow_engine._check_hard_filters(
+            conn, mapping["client_id"], mapping["candidate_id"]
+        )
+        if not ok:
+            if not body.continue_anyway:
+                return {
+                    "ok": True,
+                    "outcome": "filters_not_matched_choice",
+                    "reasons": [reason] if reason else [],
+                }
+            await flow_engine.decline_for_filter_mismatch(
+                conn, mapping_id, mapping["candidate_id"], mapping["client_id"],
+                phone, reason_code=reason_code, human_reason=reason, notify=False,
+            )
+            # Declined for this specific client, but the AI call still fires —
+            # it's a general screening test, not gated on any one job's fit.
+            eval_status = (mapping["evaluation_status"] or "").lower()
+            ai_call_pending = eval_status not in ("pass", "passed", "fail", "failed", "reject")
+            if ai_call_pending:
+                await flow_engine.post_form_submission_flow(
+                    phone, mapping["candidate_id"], mapping["name"] or ""
+                )
+            return {"ok": True, "action": body.action, "outcome": "filters_not_matched", "ai_call_pending": ai_call_pending}
+
     executed = await flow_engine.execute_candidate_flow(
         conn, mapping_id, mapping["stage"], body.action, phone
     )
     if not executed:
         raise HTTPException(400, "Could not process response — please contact support")
 
-    # Tell the frontend what just happened so it can show the right inline message
+    # Tell the frontend what just happened so it can show the right popup
     # (e.g. "last step — complete your AI call") without waiting on WhatsApp.
+    # Re-fetch the mapping's post-flow state rather than inferring purely from
+    # evaluation_status/form_submitted — _handle_interested_response may have
+    # already declined this mapping via decline_for_filter_mismatch (hard
+    # filter fail) or moved it to client_approval_pending (eval already
+    # passed), and guessing from the candidate row alone would misreport
+    # "ai_call" for a mapping that was actually just declined on filters.
     outcome = None
     if body.action == "INTERESTED":
-        cand = await conn.fetchrow(
-            "SELECT evaluation_status, form_submitted FROM candidates WHERE id = $1", candidate_id
+        mapping_after = await conn.fetchrow(
+            "SELECT stage, decline_reason FROM client_candidate_mappings WHERE id = $1", mapping_id
         )
-        if cand:
-            es = (cand["evaluation_status"] or "").lower()
-            if es in ("pass", "passed"):
-                outcome = "reviewing"
-            elif es in ("fail", "failed", "reject"):
-                outcome = "rejected"
-            elif cand["form_submitted"]:
-                outcome = "ai_call"
-            else:
-                outcome = "form_pending"
+        stage_after = mapping_after["stage"] if mapping_after else None
+        decline_reason_after = mapping_after["decline_reason"] if mapping_after else None
+
+        if stage_after == "client_approval_pending":
+            outcome = "reviewing"
+        elif decline_reason_after in ("salary_mismatch", "hard_filter_mismatch"):
+            outcome = "filters_not_matched"
+        else:
+            cand = await conn.fetchrow(
+                "SELECT evaluation_status, form_submitted FROM candidates WHERE id = $1", candidate_id
+            )
+            if cand:
+                es = (cand["evaluation_status"] or "").lower()
+                if es in ("fail", "failed", "reject"):
+                    outcome = "rejected"
+                elif cand["form_submitted"]:
+                    outcome = "ai_call"
+                else:
+                    outcome = "form_pending"
 
     return {"ok": True, "action": body.action, "outcome": outcome}
 

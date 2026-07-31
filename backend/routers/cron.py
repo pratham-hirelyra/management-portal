@@ -24,7 +24,7 @@ from pydantic import BaseModel
 import asyncpg
 from database import get_conn, get_pool
 
-_CLIENT_REACHOUT_TEMPLATE = "client_reachout_2"
+_CLIENT_REACHOUT_TEMPLATE = "client_reachout_3"
 _CANDIDATE_INTENT_TEMPLATE = os.environ.get("CANDIDATE_INTENT_TEMPLATE", "candidate_share_client_jd")
 
 router = APIRouter(prefix="/cron", tags=["cron"])
@@ -50,6 +50,18 @@ async def _send_client_reachout_step(
         return False
 
     next_step = int(client["outreach_step"] or 0) + 1
+
+    # client_reachout_3 has 3 buttons: View Profile (URL, index 0) — now
+    # re-approved as a DYNAMIC url (matches hl_cand_jd_img_v3's pattern, see
+    # services/msg91_service.py:JD_V3_TEMPLATE), so the full destination URL
+    # is sent as the button's {{1}} parameter, with client_id in ?ref= for
+    # direct click-tracking (see _process_client_reachout_click's ref-param
+    # path — phone-based fallback still applies if ref is ever missing). Not
+    # Interested (quick_reply, index 1, same NOT_INTERESTED|<uuid> payload as
+    # before); Stop (quick_reply, index 2, plain "STOP" payload — matches the
+    # existing generic STOP opt-out handler).
+    portal_url = os.environ.get("CLIENT_PORTAL_URL", "https://employer.justaccountants.in").rstrip("/")
+    onboarding_url = f"{portal_url}/client-onboard?ref={client_id_str}"
     components = [
         {
             "type": "header",
@@ -57,15 +69,21 @@ async def _send_client_reachout_step(
         },
         {
             "type": "button",
-            "sub_type": "quick_reply",
+            "sub_type": "url",
             "index": "0",
-            "parameters": [{"type": "payload", "payload": f"INTERESTED|{client_id_str}"}],
+            "parameters": [{"type": "text", "text": onboarding_url}],
         },
         {
             "type": "button",
             "sub_type": "quick_reply",
             "index": "1",
             "parameters": [{"type": "payload", "payload": f"NOT_INTERESTED|{client_id_str}"}],
+        },
+        {
+            "type": "button",
+            "sub_type": "quick_reply",
+            "index": "2",
+            "parameters": [{"type": "payload", "payload": "STOP"}],
         },
     ]
 
@@ -1120,13 +1138,13 @@ async def _insert_new_jobs(records: list[dict], conn: asyncpg.Connection) -> lis
                 key_skills, min_salary, max_salary,
                 poc_phone, poc_name,
                 source, source_job_id, segment,
-                stage, enrich_status, created_at, updated_at
+                stage, enrich_status, city, state, created_at, updated_at
             ) VALUES (
                 $1, $2, $3,
                 $4, $5, $6,
                 $7, $8,
                 $9, $10, $11,
-                $12::client_stage, $13, now(), now()
+                $12::client_stage, $13, $14, $15, now(), now()
             ) RETURNING id, company_name, job_title, job_location
             """,
             rec.get("company_name"),
@@ -1142,6 +1160,8 @@ async def _insert_new_jobs(records: list[dict], conn: asyncpg.Connection) -> lis
             rec.get("segment", "active_job_post"),
             "scraped" if has_phone else "lead",
             "enriched" if has_phone else "pending",
+            rec.get("city"),
+            rec.get("state"),
         )
         if row:
             inserted.append(dict(row))
@@ -1207,8 +1227,9 @@ async def cron_scrape_jobs(
     # so we only fetch genuinely new posts instead of re-scraping the same jobs.
     # force_days overrides this for one-off backfill runs.
     from datetime import datetime, timezone, timedelta
+    from services import city_service
     portals = list(_APIFY_ACTORS.keys())
-    overrides: dict[str, dict] = {}
+    date_overrides: dict[str, dict] = {}
     for portal in portals:
         if force_days:
             days = force_days
@@ -1218,17 +1239,40 @@ async def cron_scrape_jobs(
             )
             days = max(1, (datetime.now(timezone.utc) - last_scraped).days + 1) if last_scraped else 30
         if portal == "naukri":
-            overrides[portal] = {"freshness": str(days)}
+            date_overrides[portal] = {"freshness": str(days)}
         elif portal == "indeed":
-            overrides[portal] = {"posted_since": f"{days} days"}
+            date_overrides[portal] = {"posted_since": f"{days} days"}
         # workindia and apna have no date-filter param — no override possible
 
-    results = await asyncio.gather(*[_scrape_portal(p, overrides.get(p)) for p in portals])
+    # Loop portals x active_cities (from the active_cities table — activating a
+    # new city later is a data change only, this loop picks it up automatically).
+    cities = await city_service.active_cities(conn)
+    tasks = []
+    call_meta: list[tuple[str, dict]] = []
+    for portal in portals:
+        for city_row in cities:
+            city_override = dict(date_overrides.get(portal, {}))
+            if portal == "naukri":
+                if not city_row["naukri_code"]:
+                    print(f"[cron/scrape-jobs] skipping naukri for {city_row['city']!r} — no naukri_code set in active_cities")
+                    continue
+                city_override["cities"] = [city_row["naukri_code"]]
+            elif portal == "workindia":
+                city_override["city"] = city_row["city"]
+            else:  # indeed, apna
+                city_override["location"] = city_row["city"]
+            tasks.append(_scrape_portal(portal, city_override))
+            call_meta.append((portal, city_row))
+
+    results = await asyncio.gather(*tasks)
 
     all_records: list[dict] = []
     portal_raw_counts: dict[str, int] = {}
-    for portal, recs in zip(portals, results):
-        portal_raw_counts[portal] = len(recs)
+    for (portal, city_row), recs in zip(call_meta, results):
+        portal_raw_counts[portal] = portal_raw_counts.get(portal, 0) + len(recs)
+        for rec in recs:
+            rec["city"] = city_row["city"]
+            rec["state"] = city_row["state"]
         all_records.extend(recs)
 
     new_clients = await _insert_new_jobs(all_records, conn)
@@ -1371,7 +1415,29 @@ async def _retry_dropped_calls(conn: asyncpg.Connection, test_mode: bool = False
                     "UPDATE candidates SET drop_final_sent = true, updated_at = now() WHERE id = $1",
                     r["id"],
                 )
-                print(f"[cron/retry-dropped] final drop message sent to {phone}")
+                # Unreachable after every retry — release the lock and decline the
+                # mapping so this candidate re-enters the pool for other clients.
+                # Previously this never happened: the candidate stayed locked to
+                # this one client forever with evaluation_status still null, so a
+                # future Interested tap on a different opportunity couldn't
+                # actually get them matched (or re-call them) again.
+                await conn.execute(
+                    """
+                    UPDATE client_candidate_mappings
+                    SET stage = 'not_interested'::mapping_stage, decline_reason = 'call_unreachable', updated_at = now()
+                    WHERE id = $1
+                    """,
+                    mapping_row["id"],
+                )
+                await conn.execute(
+                    """
+                    UPDATE candidate_locks
+                    SET unlocked_at = now(), unlock_reason = 'call_unreachable'
+                    WHERE candidate_id = $1 AND unlocked_at IS NULL
+                    """,
+                    r["id"],
+                )
+                print(f"[cron/retry-dropped] final drop message sent to {phone}, candidate unlocked")
                 sent += 1
             except Exception as e:
                 print(f"[cron/retry-dropped] final drop message failed for {phone}: {e}")
@@ -1906,6 +1972,8 @@ async def cron_client_followups(
         "ALTER TABLE clients ADD COLUMN IF NOT EXISTS agreement_sent_at timestamptz",
         "ALTER TABLE clients ADD COLUMN IF NOT EXISTS agreement_reminder_count int DEFAULT 0",
         "ALTER TABLE clients ADD COLUMN IF NOT EXISTS last_agreement_reminder_at timestamptz",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS last_feedback_reminder_at timestamptz",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS last_review_reminder_at timestamptz",
         "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS slot_reminder_count int DEFAULT 0",
         "ALTER TABLE client_candidate_mappings ADD COLUMN IF NOT EXISTS last_slot_reminder_at timestamptz",
     ]:
@@ -1916,11 +1984,35 @@ async def cron_client_followups(
     reachout_ai_call     = {"sent": 0, "skipped": 0, "note": "disabled"}
     funnel_stuck_ai_call = {"sent": 0, "skipped": 0, "note": "disabled"}
 
+    # Interviews whose slot time has passed → mark interview_done + request
+    # feedback from the client (candidate is asked separately, later, only if
+    # the client likes them — see candidate-followups). This was previously a
+    # standalone endpoint (outreach.cron_feedback_requests) that was never
+    # wired to any scheduled job, so it never ran — riding it on this
+    # already-scheduled cron instead of provisioning new infrastructure for it.
+    from routers.outreach import cron_feedback_requests as _cron_feedback_requests
+    feedback_requests_result = await _cron_feedback_requests(conn=conn)
+    feedback_requests = {"sent": feedback_requests_result["data"]["feedback_requests_sent"]}
+
+    # Every 2h (gated internally): re-remind clients who still haven't given
+    # feedback on one or more interview_done candidates.
+    feedback_pending = await _followup_feedback_pending(conn)
+
+    # Every 2h (gated internally): re-remind clients who still haven't reviewed
+    # one or more shortlisted candidates sitting in client_approval_pending.
+    review_pending = await _followup_review_pending(conn)
+
+    # Customer Executive auto-assignment sweep — no messages sent, just assigns
+    # newly-eligible clients to a CE's call queue. See ce_service.sweep_assign.
+    from services.ce_service import sweep_assign
+    ce_assignment = await sweep_assign(conn)
+
     total_sent = (
         onboarding["sent"] + agreement["sent"]
         + reachout_ai_call["sent"] + funnel_stuck_ai_call["sent"]
+        + feedback_requests["sent"] + feedback_pending["sent"] + review_pending["sent"]
     )
-    print(f"[cron/client-followups] total_sent={total_sent} onboarding={onboarding} agreement={agreement} reachout_ai_call={reachout_ai_call} funnel_stuck_ai_call={funnel_stuck_ai_call}")
+    print(f"[cron/client-followups] total_sent={total_sent} onboarding={onboarding} agreement={agreement} reachout_ai_call={reachout_ai_call} funnel_stuck_ai_call={funnel_stuck_ai_call} feedback_requests={feedback_requests} feedback_pending={feedback_pending} review_pending={review_pending} ce_assignment={ce_assignment}")
 
     return {
         "data": {
@@ -1928,6 +2020,10 @@ async def cron_client_followups(
             "agreement":            agreement,
             "reachout_ai_call":     reachout_ai_call,
             "funnel_stuck_ai_call": funnel_stuck_ai_call,
+            "feedback_requests":    feedback_requests,
+            "feedback_pending":     feedback_pending,
+            "review_pending":       review_pending,
+            "ce_assignment":        ce_assignment,
             "total_sent":           total_sent,
         },
         "ok": True,
@@ -1968,8 +2064,13 @@ def _fmt_ist(dt) -> str:
 
 async def _followup_interested_form(conn: asyncpg.Connection, test_mode: bool = False) -> dict:
     """
-    Remind candidates who tapped INTERESTED and received the form link
-    but haven't submitted the form yet.
+    Remind candidates who tapped Interested Role or Not Interested Role on
+    hl_cand_jd_img_v3 and got stamped with interested_form_sent_at (see
+    flow_engine._handle_interested_response / _handle_not_interested_role_response)
+    but haven't submitted the form yet. Not Interested Role only qualifies when
+    decline_reason='not_interested_role' (declined this role, still open to
+    others) — NOT_LOOKING_FOR_JOB declines the candidate entirely and shouldn't
+    be nudged.
     Thresholds are absolute from interested_form_sent_at: T+3h, T+8h, T+24h.
     """
     import services.msg91_service as msg91
@@ -1991,7 +2092,10 @@ async def _followup_interested_form(conn: asyncpg.Connection, test_mode: bool = 
         JOIN candidates c ON c.id = ccm.candidate_id
         WHERE ccm.interested_form_sent_at IS NOT NULL
           AND COALESCE(c.form_submitted, false) = false
-          AND ccm.stage = 'interested'::mapping_stage
+          AND (
+              ccm.stage = 'interested'::mapping_stage
+              OR (ccm.stage = 'not_interested'::mapping_stage AND ccm.decline_reason = 'not_interested_role')
+          )
           AND COALESCE(ccm.interested_form_reminder_count, 0) < 3
           AND c.is_active = true
         """
@@ -2696,8 +2800,12 @@ async def _followup_candidate_documents(conn: asyncpg.Connection, test_mode: boo
 
 async def _followup_post_interview_candidate(conn: asyncpg.Connection) -> dict:
     """
-    2h after interview_done_at: send candidate a feedback page link.
-    Generates a unique token (stored in feedback_token_candidate) for the web page.
+    2h after interview_done_at, once the client has already liked/selected this
+    candidate: send the candidate a feedback page link. There's nothing to ask
+    the candidate if the client hasn't chosen them yet (or rejected them) — see
+    outreach.cron_feedback_requests, which only asks the client at interview_done
+    time. Generates a unique token (stored in feedback_token_candidate) for the
+    web page.
     """
     import services.msg91_service as msg91
 
@@ -2713,6 +2821,7 @@ async def _followup_post_interview_candidate(conn: asyncpg.Connection) -> dict:
           AND ccm.interview_done   = true
           AND ccm.interview_done_at IS NOT NULL
           AND ccm.interview_done_at <= now() - interval '2 hours'
+          AND ccm.feedback_client   = 'liked'
           AND COALESCE(ccm.post_interview_feedback_sent, false) = false
           AND (ccm.feedback_candidate IS NULL OR ccm.feedback_candidate = '')
         """
@@ -2745,6 +2854,173 @@ async def _followup_post_interview_candidate(conn: asyncpg.Connection) -> dict:
             sent += 1
         except Exception as e:
             print(f"[followup/post_iv_cand] {r['id']}: {e}")
+            skipped += 1
+
+    return {"sent": sent, "skipped": skipped}
+
+
+async def _followup_feedback_pending(conn: asyncpg.Connection) -> dict:
+    """
+    Remind clients who still have one or more candidates sitting in
+    interview_done with no feedback submitted yet. One message per client,
+    aggregating the count across all their pending candidates, with a button
+    deep-linking into the portal's feedback tab.
+
+    Cadence is every 2 hours per client, gated via last_feedback_reminder_at —
+    this function runs on every 30-min cron tick but only actually messages a
+    client once that gate has elapsed. This is also the only place that sends
+    the initial "please share your feedback" ask (outreach.cron_feedback_requests
+    just transitions the mapping to interview_done and leaves feedback_client
+    NULL, so the very next tick of this function picks it up as "pending" too).
+
+    Restricted to business hours (9am-9pm IST) like every other
+    candidate/client-facing send in these crons — real clients were previously
+    getting this at any hour since neither this function nor its caller had a
+    time gate.
+    """
+    if not _is_business_hours():
+        return {"sent": 0, "skipped": 0}
+
+    import services.msg91_service as msg91
+    from services.flow_engine import client_portal_deep_link
+
+    rows = await conn.fetch(
+        """
+        SELECT cl.id AS client_id, cl.poc_phone, cl.poc_name, cl.job_title,
+               COUNT(*) AS pending_count
+        FROM clients cl
+        JOIN client_candidate_mappings ccm ON ccm.client_id = cl.id
+        WHERE ccm.stage = 'interview_done'::mapping_stage
+          AND (ccm.feedback_client IS NULL OR ccm.feedback_client = '')
+          AND cl.poc_phone IS NOT NULL
+          AND COALESCE(cl.is_dnd, false) = false
+          AND cl.stage = 'onboarded'::client_stage
+          AND (cl.last_feedback_reminder_at IS NULL
+               OR cl.last_feedback_reminder_at < now() - interval '2 hours')
+        GROUP BY cl.id, cl.poc_phone, cl.poc_name, cl.job_title
+        """
+    )
+
+    sent = skipped = 0
+    template = os.environ.get("CLIENT_PENDING_FEEDBACK_TEMPLATE", "hl_client_pending_feedback_v1").strip()
+    portal_url = os.environ.get("CLIENT_PORTAL_URL", "https://employer.justaccountants.in").rstrip("/")
+
+    for r in rows:
+        poc_name = r["poc_name"] or "there"
+        role = r["job_title"] or "your role"
+        count = int(r["pending_count"])
+        plural = "s" if count != 1 else ""
+        verb = "are" if count != 1 else "is"
+        try:
+            if template:
+                components = [
+                    {"type": "body", "parameters": [
+                        {"type": "text", "text": poc_name},
+                        {"type": "text", "text": str(count)},
+                        {"type": "text", "text": role},
+                    ]},
+                    {"type": "button", "sub_type": "url", "index": "0", "parameters": [
+                        {"type": "text", "text": client_portal_deep_link(r["client_id"], "feedback")},
+                    ]},
+                ]
+                await msg91.send_template(r["poc_phone"], template, "en", components, sender="client")
+            else:
+                await msg91.send_text(
+                    r["poc_phone"],
+                    f"Hi {poc_name}, {count} candidate{plural} for {role} {verb} still pending your feedback.\n\n"
+                    f"Share feedback: {portal_url}/{client_portal_deep_link(r['client_id'], 'feedback')}",
+                    sender="client",
+                )
+            await conn.execute(
+                "UPDATE clients SET last_feedback_reminder_at = now() WHERE id = $1",
+                r["client_id"],
+            )
+            sent += 1
+        except Exception as e:
+            print(f"[followup/feedback_pending] {r['client_id']}: {e}")
+            skipped += 1
+
+    return {"sent": sent, "skipped": skipped}
+
+
+async def _followup_review_pending(conn: asyncpg.Connection) -> dict:
+    """
+    Remind clients who still have one or more candidates sitting in
+    client_approval_pending (i.e. shortlisted, awaiting the client's review)
+    that haven't been acted on. Same shape as _followup_feedback_pending:
+    one aggregated message per client, gated to every 2h via
+    last_review_reminder_at.
+
+    notify_client_pending_review (flow_engine.py) already sends a reactive,
+    one-time, per-candidate ping the moment a candidate first enters this
+    stage — but nothing ever re-reminds if the client doesn't act on it. This
+    is that missing re-reachout, riding on the same already-scheduled cron.
+
+    Uses a separate template (CLIENT_REVIEW_REMINDER_TEMPLATE) from the
+    reactive nudge — that one names a single newly-added candidate ("One new
+    candidate {{2}} pending review..."), which doesn't fit a backlog reminder
+    that may cover several accumulated candidates, so this one is count-based
+    instead ("you still have {{2}} candidate(s) pending review...").
+    notify_client_pending_review also stamps last_review_reminder_at on its
+    reactive send, so this reminder correctly waits a full 2h from whichever
+    "pending review" message the client most recently received.
+    """
+    import services.msg91_service as msg91
+    from services.flow_engine import client_portal_deep_link
+
+    rows = await conn.fetch(
+        """
+        SELECT cl.id AS client_id, cl.poc_phone, cl.poc_name, cl.job_title,
+               COUNT(*) AS pending_count
+        FROM clients cl
+        JOIN client_candidate_mappings ccm ON ccm.client_id = cl.id
+        WHERE ccm.stage = 'client_approval_pending'::mapping_stage
+          AND cl.poc_phone IS NOT NULL
+          AND COALESCE(cl.is_dnd, false) = false
+          AND cl.stage = 'onboarded'::client_stage
+          AND (cl.last_review_reminder_at IS NULL
+               OR cl.last_review_reminder_at < now() - interval '2 hours')
+        GROUP BY cl.id, cl.poc_phone, cl.poc_name, cl.job_title
+        """
+    )
+
+    sent = skipped = 0
+    template = os.environ.get("CLIENT_REVIEW_REMINDER_TEMPLATE", "hl_client_review_reminder_v1").strip()
+    portal_url = os.environ.get("CLIENT_PORTAL_URL", "https://employer.justaccountants.in").rstrip("/")
+
+    for r in rows:
+        poc_name = r["poc_name"] or "there"
+        role = r["job_title"] or "your role"
+        count = int(r["pending_count"])
+        plural = "s" if count != 1 else ""
+        verb = "are" if count != 1 else "is"
+        try:
+            if template:
+                components = [
+                    {"type": "body", "parameters": [
+                        {"type": "text", "text": poc_name},
+                        {"type": "text", "text": str(count)},
+                        {"type": "text", "text": role},
+                    ]},
+                    {"type": "button", "sub_type": "url", "index": "0", "parameters": [
+                        {"type": "text", "text": client_portal_deep_link(r["client_id"], "review")},
+                    ]},
+                ]
+                await msg91.send_template(r["poc_phone"], template, "en", components, sender="client")
+            else:
+                await msg91.send_text(
+                    r["poc_phone"],
+                    f"Hi {poc_name}, {count} candidate{plural} for {role} {verb} still pending your review.\n\n"
+                    f"Review now: {portal_url}/{client_portal_deep_link(r['client_id'], 'review')}",
+                    sender="client",
+                )
+            await conn.execute(
+                "UPDATE clients SET last_review_reminder_at = now() WHERE id = $1",
+                r["client_id"],
+            )
+            sent += 1
+        except Exception as e:
+            print(f"[followup/review_pending] {r['client_id']}: {e}")
             skipped += 1
 
     return {"sent": sent, "skipped": skipped}
@@ -3282,16 +3558,34 @@ async def _apply_enrich_results(results: list[dict], pool) -> tuple[int, int, in
             elif status == "enriched":
                 dup = await _find_duplicate_client(conn, phones, exclude_id=cid)
                 if dup:
+                    # Still disqualify/DND (we don't want to message a number that
+                    # belongs to another client) but persist the phone we found —
+                    # previously it was discarded entirely, leaving staff with no
+                    # way to see or verify the number behind the duplicate match.
+                    best_phone = phones[0]
                     await conn.execute(
                         """
                         UPDATE clients SET
                             stage               = 'disqualified'::client_stage,
                             is_dnd              = true,
                             enrich_status       = 'not_found',
-                            company_description = COALESCE(NULLIF(company_description, ''), $1),
+                            poc_phone           = COALESCE(poc_phone, $1),
+                            phone_numbers       = (
+                                SELECT COALESCE(jsonb_agg(DISTINCT x.val), '[]'::jsonb)
+                                FROM (
+                                    SELECT jsonb_array_elements_text(
+                                        COALESCE(phone_numbers, '[]'::jsonb)
+                                    ) AS val
+                                    UNION ALL
+                                    SELECT unnest($2::text[]) AS val
+                                ) x
+                                WHERE x.val IS NOT NULL AND x.val <> ''
+                            ),
+                            company_description = COALESCE(NULLIF(company_description, ''), $3),
                             updated_at          = now()
-                        WHERE id = $2
+                        WHERE id = $4
                         """,
+                        best_phone, phones,
                         f"Duplicate — phone already belongs to client {dup['id']} "
                         f"({dup['company_name']!r}, stage={dup['stage']}).",
                         cid,
@@ -3628,15 +3922,26 @@ async def flush_jd_queue(
                 await conn.execute("UPDATE jd_send_queue SET status='sent', sent_at=now() WHERE id=$1", queue_id)
                 continue
 
-            jd_image_url = await _ensure_jd_image(client_id)
-            if not jd_image_url:
+            # FF_TEMPLATE (form-already-filled candidates) has no header image —
+            # only block/retry this batch on a missing JD card if at least one
+            # eligible candidate actually resolves to an image-based template.
+            needs_image = any(
+                m.get("template_name", msg91.JD_V3_TEMPLATE) != msg91.FF_TEMPLATE for m in eligible
+            )
+            jd_image_url = await _ensure_jd_image(client_id) if needs_image else None
+            if needs_image and not jd_image_url:
                 print(f"[flush-jd-queue] Skipping queue {queue_id} — JD card image unavailable, will retry next cycle")
                 failed_total += 1
                 continue
             client_row = await _get_client(client_id)
             maps_url = _client_maps_url(dict(client_row)) if client_row else ""
             await msg91.send_bulk_intent(
-                [{"phone": m["phone"], "mapping_id": m["mapping_id"], "name": m.get("name", ""), "intro": m.get("intro", ""), "maps_url": maps_url} for m in eligible],
+                [{"phone": m["phone"], "mapping_id": m["mapping_id"], "name": m.get("name", ""),
+                  "intro": m.get("intro", ""), "maps_url": maps_url,
+                  "area": m.get("area", ""), "salary": m.get("salary", ""),
+                  "company_name": m.get("company_name", ""),
+                  "role": m.get("role", ""),
+                  "template_name": m.get("template_name", msg91.JD_V3_TEMPLATE)} for m in eligible],
                 components,
                 image_url=jd_image_url,
             )
@@ -3658,7 +3963,8 @@ async def flush_jd_queue(
                     VALUES ($1, $2, 'candidate_intent_ask', 'outbound', $3, 'sent', now(), $4)
                     ON CONFLICT DO NOTHING
                     """,
-                    uuid.UUID(m["candidate_id"]), uuid.UUID(m["mapping_id"]), m["phone"], _CANDIDATE_INTENT_TEMPLATE,
+                    uuid.UUID(m["candidate_id"]), uuid.UUID(m["mapping_id"]), m["phone"],
+                    m.get("template_name", _CANDIDATE_INTENT_TEMPLATE),
                 )
                 await conn.execute(
                     "SELECT record_candidate_jd_sent($1, $2)",

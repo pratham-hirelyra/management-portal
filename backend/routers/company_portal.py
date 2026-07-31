@@ -12,7 +12,7 @@ import re
 import random
 import uuid
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Header, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Header, BackgroundTasks, Query
 from pydantic import BaseModel
 from typing import List
 import asyncpg
@@ -239,6 +239,51 @@ async def get_requirement_workspace(
     return {"data": payload, "ok": True}
 
 
+# ── Internal admin preview (no OTP session) ─────────────────────────────────
+# Mirrors candidate_portal.py's /search + unauthenticated /{id}/jobs pattern —
+# gated on the client-portal frontend side by a static ADMIN_KEY, not a
+# poc_session_token. Lets staff open a client's real portal view without
+# needing that client's phone for OTP.
+
+@router.get("/admin/search")
+async def admin_search_clients(
+    q: str = Query(..., min_length=2),
+    conn: asyncpg.Connection = Depends(get_conn),
+):
+    pattern = f"%{q}%"
+    rows = await conn.fetch(
+        """
+        SELECT id, company_name, poc_name, poc_phone, job_title
+        FROM clients
+        WHERE (company_name ILIKE $1 OR poc_name ILIKE $1 OR poc_phone ILIKE $1)
+        ORDER BY company_name
+        LIMIT 20
+        """,
+        pattern,
+    )
+    return {"data": [dict(r) for r in rows], "count": len(rows), "ok": True}
+
+
+@router.get("/admin/requirements/{client_id}")
+async def admin_get_requirement_workspace(
+    client_id: str,
+    conn: asyncpg.Connection = Depends(get_conn),
+):
+    try:
+        cid = uuid.UUID(client_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid requirement ID")
+    row = await conn.fetchrow(
+        "SELECT id, company_name, job_title, poc_name, poc_phone, available_slots, recruiter_slots, "
+        "stage, matching_state, max_salary, job_location, interview_location FROM clients WHERE id = $1",
+        cid,
+    )
+    if not row:
+        raise HTTPException(404, "Hiring requirement not found")
+    payload = await build_requirement_workspace(dict(row), conn)
+    return {"data": payload, "ok": True}
+
+
 # ── Candidate Review actions ───────────────────────────────────────────────────
 
 class RejectCandidateBody(BaseModel):
@@ -361,6 +406,8 @@ async def set_interview_slots(
 ):
     """Create or replace the pool of interview-time slots offered to invited candidates."""
     client = await get_owned_client(client_id, phone, conn)
+    if 0 < len(body.slots) < 5:
+        raise HTTPException(400, "Please provide at least 5 interview slots.")
     slots_with_ids = [
         {"id": s.get("id") or str(uuid.uuid4()), "label": s["label"], "iso": s.get("iso", "")}
         for s in body.slots

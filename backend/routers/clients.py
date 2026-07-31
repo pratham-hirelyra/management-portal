@@ -11,10 +11,11 @@ from pydantic import BaseModel
 from typing import Optional, List
 
 
-async def geocode(address: str) -> tuple[float, float] | tuple[None, None]:
+async def geocode(address: str) -> tuple[float | None, float | None, str | None, str | None]:
     key = os.environ.get("GOOGLE_MAPS_API_KEY", "")
     if not key:
-        return None, None
+        return None, None, None, None
+    lat = lng = None
     try:
         async with httpx.AsyncClient(timeout=8.0) as http:
             # Places Text Search respects the full address string as a named-place
@@ -27,10 +28,19 @@ async def geocode(address: str) -> tuple[float, float] | tuple[None, None]:
             results = resp.json().get("results", [])
             if results:
                 loc = results[0]["geometry"]["location"]
-                return loc["lat"], loc["lng"]
+                lat, lng = loc["lat"], loc["lng"]
     except Exception:
         pass
-    return None, None
+    if lat is None or lng is None:
+        return None, None, None, None
+
+    # Places Text Search results don't include address_components (only the
+    # Geocoding API does) — one extra reverse-geocode call on the coordinates
+    # we already have gets us structured city/state without touching the
+    # landmark-aware lat/lng lookup above.
+    from services.city_service import reverse_geocode
+    city, state = await reverse_geocode(lat, lng)
+    return lat, lng, city, state
 
 class BulkScrapeRequest(BaseModel):
     client_ids: list[str]
@@ -899,7 +909,7 @@ async def onboard_client(
     phone_10 = digits if len(digits) == 10 else raw_phone
 
     if d.get("job_location") and not d.get("location_lat"):
-        d["location_lat"], d["location_lng"] = await geocode(d["job_location"])
+        d["location_lat"], d["location_lng"], d["city"], d["state"] = await geocode(d["job_location"])
 
     # 1. Direct lookup by ref (client_id passed in the onboarding link)
     existing = None
@@ -965,13 +975,16 @@ async def onboard_client(
                 job_timings        = COALESCE($17, job_timings),
                 gender_requirements= COALESCE($18, gender_requirements),
                 tools_requirements = COALESCE($19, tools_requirements),
-                job_type           = COALESCE($20, job_type),
-                other_details      = COALESCE($21, other_details),
-                is_ca_firm         = COALESCE($23, is_ca_firm),
-                district           = COALESCE($25, district),
-                stage              = $22::client_stage,
+                job_type           = 'Full Time',
+                other_details      = COALESCE($20, other_details),
+                is_ca_firm         = COALESCE($22, is_ca_firm),
+                district           = COALESCE($24, district),
+                paid_leaves        = COALESCE($25, paid_leaves),
+                city               = COALESCE($26, city),
+                state              = COALESCE($27, state),
+                stage              = $21::client_stage,
                 updated_at         = now()
-            WHERE id = $24
+            WHERE id = $23
             RETURNING *
             """,
             d["company_name"], d["poc_name"], phone_10 or None,
@@ -981,8 +994,9 @@ async def onboard_client(
             d["num_employees"], d["female_employee_pct"], d["diwali_bonus"],
             d["min_salary"], d["max_salary"], d["key_skills"],
             d["job_timings"], d["gender_requirements"], d["tools_requirements"],
-            d["job_type"], d["other_details"],
+            d["other_details"],
             new_stage, d.get("is_ca_firm"), existing["id"], d.get("district"),
+            d.get("paid_leaves"), d.get("city"), d.get("state"),
         )
         if not d.get("skip_agreement"):
             background_tasks.add_task(_generate_and_send_agreement, str(existing["id"]))
@@ -1010,12 +1024,12 @@ async def onboard_client(
             agreement_url, source, stage,
             phone_numbers, agreed_phone, company_website, company_description, source_job_id,
             female_employee_pct, diwali_bonus, business_type,
-            segment, open_positions, is_ca_firm, district
+            segment, open_positions, is_ca_firm, district, paid_leaves, city, state
         ) VALUES (
             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-            $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,'interested'::client_stage,
-            $29::jsonb,$30,$31,$32,$33,
-            $34,$35,$36,$37,$38,$39,$40
+            $18,$19,$20,$21,$22,$23,'Full Time',$24,$25,$26,$27,'interested'::client_stage,
+            $28::jsonb,$29,$30,$31,$32,
+            $33,$34,$35,$36,$37,$38,$39,$40,$41,$42
         ) RETURNING *
         """,
         d["company_name"], d["location"], d["job_location"],
@@ -1026,13 +1040,13 @@ async def onboard_client(
         d["job_timings"], d["gst_tds"], d["other_details"],
         d["age_requirements"], d["gender_requirements"], d["tools_requirements"],
         d["religion_requirement"], d["payment_terms"], d["salary_deductions"],
-        d["job_type"], d["fee_amount"], d["replacement_period"],
+        d["fee_amount"], d["replacement_period"],
         d["agreement_url"], d["source"],
         _json.dumps(phone_numbers), d.get("agreed_phone"),
         d.get("company_website"), d.get("company_description"), d.get("source_job_id"),
         d.get("female_employee_pct"), d.get("diwali_bonus"), d.get("business_type"),
         d.get("segment"), d.get("open_positions") or 1, d.get("is_ca_firm") or False,
-        d.get("district"),
+        d.get("district"), d.get("paid_leaves"), d.get("city"), d.get("state"),
     )
     if not d.get("skip_agreement"):
         background_tasks.add_task(_generate_and_send_agreement, str(row["id"]))
@@ -1054,7 +1068,7 @@ async def create_client(
     d = body.model_dump()
     stage = d.get("initial_stage") or "lead"
     if d.get("job_location") and not d.get("location_lat"):
-        d["location_lat"], d["location_lng"] = await geocode(d["job_location"])
+        d["location_lat"], d["location_lng"], d["city"], d["state"] = await geocode(d["job_location"])
     import json as _json
     phone_numbers = d.get("phone_numbers") or []
     row = await conn.fetchrow(
@@ -1068,12 +1082,12 @@ async def create_client(
             agreement_url, source, stage,
             phone_numbers, agreed_phone, company_website, company_description, source_job_id,
             female_employee_pct, diwali_bonus, business_type,
-            segment, open_positions, travel_radius
+            segment, open_positions, travel_radius, city, state
         ) VALUES (
             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-            $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29::client_stage,
-            $30::jsonb,$31,$32,$33,$34,
-            $35,$36,$37,$38,$39,$40
+            $18,$19,$20,$21,$22,$23,'Full Time',$24,$25,$26,$27,$28::client_stage,
+            $29::jsonb,$30,$31,$32,$33,
+            $34,$35,$36,$37,$38,$39,$40,$41
         ) RETURNING *
         """,
         d["company_name"], d["location"], d["job_location"],
@@ -1084,12 +1098,13 @@ async def create_client(
         d["job_timings"], d["gst_tds"], d["other_details"],
         d["age_requirements"], d["gender_requirements"], d["tools_requirements"],
         d["religion_requirement"], d["payment_terms"], d["salary_deductions"],
-        d["job_type"], d["fee_amount"], d["replacement_period"],
+        d["fee_amount"], d["replacement_period"],
         d["agreement_url"], d["source"], stage,
         _json.dumps(phone_numbers), d.get("agreed_phone"),
         d.get("company_website"), d.get("company_description"), d.get("source_job_id"),
         d.get("female_employee_pct"), d.get("diwali_bonus"), d.get("business_type"),
         d.get("segment"), d.get("open_positions") or 1, d.get("travel_radius"),
+        d.get("city"), d.get("state"),
     )
     background_tasks.add_task(
         _trigger_rm_assignment,
@@ -1197,9 +1212,9 @@ async def import_from_sheet(
             stage = _map_status(raw.get('Status', 'scraped'))
             source_job_id = raw.get('Source Job Id', '').strip() or None
 
-            lat, lng = None, None
+            lat, lng, city, state = None, None, None, None
             if location:
-                lat, lng = await geocode(location)
+                lat, lng, city, state = await geocode(location)
 
             existing = None
             if source_job_id:
@@ -1215,7 +1230,8 @@ async def import_from_sheet(
                         poc_name=$5, poc_position=$6, poc_phone=$7,
                         job_title=$8, source=$9, company_website=$10,
                         company_description=$11, phone_numbers=$12::jsonb,
-                        stage=$13::client_stage, updated_at=now()
+                        stage=$13::client_stage, city=COALESCE($15, city),
+                        state=COALESCE($16, state), updated_at=now()
                     WHERE source_job_id=$14""",
                     company_name, location, lat, lng,
                     raw.get('Client POC Name', '').strip() or None,
@@ -1226,7 +1242,7 @@ async def import_from_sheet(
                     raw.get('Company Website', '').strip() or None,
                     raw.get('Company Description', '').strip() or None,
                     _json.dumps(phone_numbers),
-                    stage, source_job_id,
+                    stage, source_job_id, city, state,
                 )
                 updated += 1
             else:
@@ -1235,9 +1251,9 @@ async def import_from_sheet(
                         company_name, location, job_location, location_lat, location_lng,
                         poc_name, poc_position, poc_phone, job_title, source,
                         company_website, company_description, phone_numbers,
-                        stage, source_job_id
+                        stage, source_job_id, city, state
                     ) VALUES (
-                        $1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::client_stage,$14
+                        $1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::client_stage,$14,$15,$16
                     )""",
                     company_name, location, lat, lng,
                     raw.get('Client POC Name', '').strip() or None,
@@ -1248,7 +1264,7 @@ async def import_from_sheet(
                     raw.get('Company Website', '').strip() or None,
                     raw.get('Company Description', '').strip() or None,
                     _json.dumps(phone_numbers),
-                    stage, source_job_id,
+                    stage, source_job_id, city, state,
                 )
                 inserted += 1
         except Exception as e:
@@ -1380,7 +1396,12 @@ async def update_client(
         raise HTTPException(400, "No fields to update")
 
     if "job_location" in updates and "location_lat" not in updates:
-        updates["location_lat"], updates["location_lng"] = await geocode(updates["job_location"])
+        lat, lng, city, state = await geocode(updates["job_location"])
+        updates["location_lat"], updates["location_lng"] = lat, lng
+        if city:
+            updates["city"] = city
+        if state:
+            updates["state"] = state
 
     keys = list(updates.keys())
     values = list(updates.values())
@@ -1457,9 +1478,9 @@ async def update_stage(
             body.to_stage.value,
         )
 
-    # Auto-trigger matchmaking when client is onboarded — disabled, use button only
-    # if body.to_stage.value == "onboarded":
-    #     background_tasks.add_task(_run_auto_match, str(client_id))
+    # Auto-trigger matchmaking when client is onboarded
+    if body.to_stage.value == "onboarded":
+        background_tasks.add_task(_run_auto_match, str(client_id))
 
     # Send hl_client_search_started at onboarding (90s delay to let agreement + RM intro land first)
     if body.to_stage.value == "onboarded":
@@ -1672,7 +1693,8 @@ async def get_agreement_page(
             "poc_name":           c.get("poc_name"),
             "job_location":       c.get("job_location"),
             "payment_terms":      c.get("payment_terms"),
-            "replacement_period": c.get("replacement_period"),
+            "payment_due_days":   c.get("payment_due_days") or 10,
+            "replacement_period": c.get("replacement_period") or "3 months",
             "agreement_pdf_url":  c.get("agreement_url"),
             "modification_notes": c.get("modification_notes"),
             "stage":              stage,
@@ -1705,8 +1727,8 @@ async def agree_to_agreement(
         client["id"],
     )
     # Also onboard any linked secondary positions
-    await conn.execute(
-        "UPDATE clients SET stage = 'onboarded'::client_stage, updated_at = now() WHERE primary_client_id = $1",
+    secondary_rows = await conn.fetch(
+        "UPDATE clients SET stage = 'onboarded'::client_stage, updated_at = now() WHERE primary_client_id = $1 RETURNING id",
         client["id"],
     )
 
@@ -1716,6 +1738,15 @@ async def agree_to_agreement(
         await _post_agree_actions(conn, client["id"])
     except Exception as e:
         print(f"[agreement/agree] post-agree actions failed for {client['id']}: {e}")
+
+    # Secondary positions are separate client rows/roles — they each need their
+    # own matchmaking run, but not a second copy of the primary's agreement
+    # PDF/portal-link/RM messages (those are company-level, already sent once
+    # above), so trigger matching directly instead of the full _post_agree_actions.
+    import asyncio
+    for row in secondary_rows:
+        asyncio.create_task(_run_auto_match(str(row["id"])))
+        asyncio.create_task(_send_search_started(str(row["id"])))
 
     return {"data": {"confirmed": True}, "ok": True}
 
@@ -1884,6 +1915,12 @@ async def get_timeline(
     for r in stage_rows:
         e = _normalize(r)
         e["event_type"] = "stage_change"
+        # Match the client_activity_log branch below — created_at must be a
+        # string here too, or sorting the merged list crashes ("'<' not
+        # supported between instances of 'str' and 'datetime.datetime'")
+        # the moment a client has both event types.
+        if e.get("created_at"):
+            e["created_at"] = e["created_at"].isoformat()
         events.append(e)
     for r in activity_rows:
         events.append({
@@ -2009,22 +2046,15 @@ async def get_client_status(
     # started before it actually has. Never sets matching_state — read-only.
     matching_state = client["matching_state"]
     matchmaking_started = matching_state is not None
-    has_mappings = bool(mstages)
 
     def _success_step(key: str) -> str:
         if key == "requirement_submitted":
             return "done"
         if key == "matchmaking_started":
             return "done" if matchmaking_started else "active"
-        if key == "reaching_out":
-            if has_mappings: return "done"
-            return "active" if matchmaking_started else "pending"
-        if key == "waiting_responses":
-            if has_profile_sharing: return "done"
-            return "active" if has_mappings else "pending"
         if key == "candidate_review":
             if has_interviews: return "done"
-            return "active" if has_profile_sharing else "pending"
+            return "active" if matchmaking_started else "pending"
         if key == "interview_scheduling":
             if has_hired: return "done"
             return "active" if has_interviews else "pending"
@@ -2033,13 +2063,11 @@ async def get_client_status(
         return "pending"
 
     success_funnel = [
-        {"key": "requirement_submitted", "label": "Requirement Submitted",          "status": _success_step("requirement_submitted")},
-        {"key": "matchmaking_started",   "label": "Matchmaking Started",            "status": _success_step("matchmaking_started")},
-        {"key": "reaching_out",          "label": "Reaching Out to Candidates",     "status": _success_step("reaching_out")},
-        {"key": "waiting_responses",     "label": "Waiting for Responses",          "status": _success_step("waiting_responses")},
-        {"key": "candidate_review",      "label": "Candidate Review",               "status": _success_step("candidate_review")},
-        {"key": "interview_scheduling",  "label": "Interview Scheduling",           "status": _success_step("interview_scheduling")},
-        {"key": "hiring",                "label": "Hiring",                         "status": _success_step("hiring")},
+        {"key": "requirement_submitted", "label": "Requirement Submitted", "status": _success_step("requirement_submitted")},
+        {"key": "matchmaking_started",   "label": "Matchmaking Started",   "status": _success_step("matchmaking_started")},
+        {"key": "candidate_review",      "label": "Review Candidates",     "status": _success_step("candidate_review")},
+        {"key": "interview_scheduling",  "label": "Schedule Interviews",   "status": _success_step("interview_scheduling")},
+        {"key": "hiring",                "label": "Hire",                 "status": _success_step("hiring")},
     ]
 
     return {

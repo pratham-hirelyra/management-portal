@@ -127,8 +127,8 @@ async def send_batch(
         JOIN candidates c ON c.id = ccm.candidate_id
         WHERE lower(c.evaluation_status) IN ('pass', 'passed')
           AND ccm.stage::text NOT IN (
-              'placed','rejected','not_interested','not_looking_for_job',
-              'declined_for_interview','waitlisted'
+              'placed','rejected','rejected_by_client','not_interested','not_looking_for_job',
+              'declined_for_interview','waitlisted','client_closed'
           )
         GROUP BY ccm.candidate_id
         HAVING COUNT(*) >= 4
@@ -350,8 +350,10 @@ async def mark_interested(
         return {"data": {"stage": "not_interested"}, "ok": True}
 
     else:
-        # eval_status is null → form not filled / AI call not done yet
-        # Stage = interested; cron will send form reminders
+        # eval_status is null → form not filled / AI call not done yet.
+        # Stage = interested; cron will send form reminders. Not yet in
+        # client_approval_pending, so no client notify here — that fires once
+        # evaluation passes and this candidate actually lands in review.
         await conn.execute(
             """
             UPDATE client_candidate_mappings
@@ -361,11 +363,6 @@ async def mark_interested(
             """,
             mapping_id,
         )
-        try:
-            from services.flow_engine import notify_client_pending_review
-            await notify_client_pending_review(client_id, conn)
-        except Exception as e:
-            print(f"[mark_interested] client pending-review notify error for {mapping_id}: {e}")
         return {"data": {"stage": "interested", "form_needed": True}, "ok": True}
 
 
@@ -394,7 +391,7 @@ async def get_handover_link(
             client_id, token,
         )
 
-    base = os.environ.get("FRONTEND_BASE_URL", "http://localhost:5173")
+    base = os.environ.get("FRONTEND_URL", "http://localhost:5173")
     return {"data": {"token": token, "url": f"{base}/handover/{token}"}, "ok": True}
 
 
@@ -739,79 +736,55 @@ async def cron_t2_reminders(conn: asyncpg.Connection = Depends(get_conn)):
 async def cron_feedback_requests(conn: asyncpg.Connection = Depends(get_conn)):
     """
     Cloud Scheduler: every 30 minutes.
-    For interviews whose slot time has passed, generate feedback tokens + send WA links.
-    """
-    import services.msg91_service as msg91
+    For interviews whose slot time has passed, mark interview_done. This is
+    bookkeeping only — it does NOT message the client directly. The actual
+    client-facing "please share your feedback" ping (proper approved template,
+    button deep-linking into the client portal's Feedback tab) is sent by
+    _followup_feedback_pending (cron.py), which runs immediately after this in
+    cron_client_followups and picks up every interview_done mapping with no
+    feedback_client yet — including ones this function just transitioned.
+    Previously this function also sent its own plain-text message with a raw
+    client_token link (client portal used to be token-based); that link used a
+    stale/nonexistent FRONTEND_BASE_URL env var and had drifted out of sync
+    with the client-portal's move to an authenticated dashboard, so real
+    clients were receiving broken localhost links. Removed rather than fixed
+    in place since _followup_feedback_pending already covers the same ping
+    correctly and stamping last_feedback_reminder_at here was actually
+    suppressing that better message from also going out.
 
+    The candidate is deliberately NOT asked here — candidate feedback is only
+    requested once the client has liked/selected them (see
+    _followup_post_interview_candidate in cron.py, gated on feedback_client
+    = 'liked'), since there's nothing to ask the candidate about a client who
+    already rejected them.
+    """
     now = datetime.now(timezone.utc)
-    base = os.environ.get("FRONTEND_BASE_URL", "http://localhost:5173")
 
     rows = await conn.fetch(
         """
-        SELECT ccm.id AS mapping_id, ccm.interview_slot, ccm.candidate_id, ccm.client_id,
-               c.phone AS candidate_phone, c.name AS candidate_name,
-               cl.poc_phone AS client_phone, cl.poc_name, cl.company_name
+        SELECT ccm.id AS mapping_id
         FROM client_candidate_mappings ccm
-        JOIN candidates c  ON c.id  = ccm.candidate_id
-        JOIN clients    cl ON cl.id = ccm.client_id
+        JOIN clients cl ON cl.id = ccm.client_id
         WHERE ccm.interview_slot IS NOT NULL
           AND ccm.interview_slot < $1
           AND ccm.feedback_requested_at IS NULL
           AND ccm.stage = 'slot_booked'
+          AND cl.stage = 'onboarded'::client_stage
         """,
         now,
     )
 
     sent = 0
     for r in rows:
-        client_token = secrets.token_urlsafe(20)
-        cand_token = secrets.token_urlsafe(20)
         await conn.execute(
             """
             UPDATE client_candidate_mappings
-            SET feedback_token_client = $1, feedback_token_candidate = $2,
-                feedback_requested_at = now(), stage = 'interview_done'::mapping_stage,
+            SET feedback_requested_at = now(), stage = 'interview_done'::mapping_stage,
                 interview_done = true, interview_done_at = now(), updated_at = now()
-            WHERE id = $3
+            WHERE id = $1
             """,
-            client_token, cand_token, r["mapping_id"],
+            r["mapping_id"],
         )
-
-        client_link = f"{base}/feedback/{client_token}"
-        cand_link = f"{base}/feedback/{cand_token}"
-
-        if r["client_phone"]:
-            try:
-                await msg91.send_text(
-                    r["client_phone"],
-                    f"Hi {r['poc_name'] or 'there'}, how did the interview with "
-                    f"{r['candidate_name']} go? Please share your feedback: {client_link}",
-                    sender="client",
-                )
-            except Exception as e:
-                print(f"[feedback-requests] client WA failed for mapping {r['mapping_id']}: {e}")
-                try:
-                    from services.google_chat_service import send_alert
-                    await send_alert("Feedback request WA to client failed", str(e), severity="ERROR", context={"mapping_id": str(r["mapping_id"]), "phone": r["client_phone"]})
-                except Exception:
-                    pass
-
-        if r["candidate_phone"]:
-            try:
-                await msg91.send_text(
-                    r["candidate_phone"],
-                    f"Hi {r['candidate_name'] or 'there'}, how was your interview with "
-                    f"{r['company_name']}? Please share your feedback: {cand_link}",
-                    sender="candidate",
-                )
-            except Exception as e:
-                print(f"[feedback-requests] candidate WA failed for mapping {r['mapping_id']}: {e}")
-                try:
-                    from services.google_chat_service import send_alert
-                    await send_alert("Feedback request WA to candidate failed", str(e), severity="ERROR", context={"mapping_id": str(r["mapping_id"]), "phone": r["candidate_phone"]})
-                except Exception:
-                    pass
-
         sent += 1
 
     # No-show check: flag low trust after 48h with no feedback from either side
@@ -925,7 +898,7 @@ async def _handle_outcome(mapping_id: uuid.UUID, row: dict, conn: asyncpg.Connec
             client_id, batch_num, mapping_id,
         )
         if remaining_liked == 0 and rm_phone:
-            base = os.environ.get("FRONTEND_BASE_URL", "http://localhost:5173")
+            base = os.environ.get("FRONTEND_URL", "http://localhost:5173")
             try:
                 await msg91.send_text(
                     rm_phone,

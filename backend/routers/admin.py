@@ -301,7 +301,7 @@ async def get_rm_actions(rm_id: uuid.UUID, conn: asyncpg.Connection = Depends(ge
             cl.feedback_token,
             COUNT(DISTINCT ms.candidate_id) FILTER (WHERE ms.mms_score > 70) AS high_match_count,
             COUNT(DISTINCT ccm.id) FILTER (
-                WHERE ccm.stage::text NOT IN ('rejected_by_client', 'placed', 'rejected', 'not_interested', 'declined_for_interview')
+                WHERE ccm.stage::text NOT IN ('rejected_by_client', 'placed', 'rejected', 'not_interested', 'declined_for_interview', 'client_closed')
             ) AS pipeline_count
         FROM clients cl
         LEFT JOIN mms_scores ms ON ms.client_id = cl.id
@@ -710,6 +710,14 @@ async def rm_bulk_resend_jd(
             raise HTTPException(500, f"JD card generation failed: {e}")
 
     maps_url = _client_maps_url(dict(client))
+    import os as _os
+    # Form already filled → keep the existing reachout template. Form not yet
+    # filled → hl_cand_jd_img_v3. See services/msg91_service.py.
+    _existing_tmpl = _os.environ.get("CANDIDATE_INTENT_TEMPLATE_IMG") or _os.environ.get("CANDIDATE_INTENT_TEMPLATE", "")
+    templates_by_mapping = {
+        str(r["id"]): (_existing_tmpl if r["candidate_form_submitted"] else msg91.JD_V3_TEMPLATE)
+        for r in rows
+    }
     candidates = [
         {
             "phone": msg91._format_phone(r["candidate_phone"]),
@@ -720,6 +728,7 @@ async def rm_bulk_resend_jd(
                 dict(client),
             ),
             "maps_url": maps_url,
+            "template_name": templates_by_mapping[str(r["id"])],
         }
         for r in rows
     ]
@@ -735,8 +744,6 @@ async def rm_bulk_resend_jd(
         """,
         sent_ids,
     )
-    import os as _os
-    tmpl = (client.get("jd_card_url") and _os.environ.get("CANDIDATE_INTENT_TEMPLATE_IMG")) or _os.environ.get("CANDIDATE_INTENT_TEMPLATE", "")
     for r in rows:
         await conn.execute(
             """
@@ -744,7 +751,7 @@ async def rm_bulk_resend_jd(
                 (candidate_id, mapping_id, message_type, direction, phone, status, sent_at, used_template_name)
             VALUES ($1, $2, 'candidate_intent_ask', 'outbound', $3, 'sent', now(), $4)
             """,
-            r["candidate_id"], r["id"], msg91._format_phone(r["candidate_phone"]), tmpl,
+            r["candidate_id"], r["id"], msg91._format_phone(r["candidate_phone"]), templates_by_mapping[str(r["id"])],
         )
 
     return {"data": {"sent": len(sent_ids)}, "ok": True}

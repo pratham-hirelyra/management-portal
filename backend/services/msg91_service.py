@@ -109,6 +109,44 @@ async def send_template(
     return resp.json()
 
 
+# hl_cand_jd_img_v3 swaps the Interested/Not-Interested quick-replies for URL
+# buttons routed through MSG91's own Smart URL Shortener (m.9m.io) — the {{1}}
+# parameter must be the real destination URL, which MSG91 rewrites into a
+# tracked m.9m.io/... link at send time; a bare path segment gets rejected
+# with "Invalid URL in Button Component". Not-Interested points at /p-apply,
+# a page that doesn't exist on the frontend yet.
+JD_V3_TEMPLATE = "hl_cand_jd_img_v3"
+_CANDIDATE_PORTAL_URL = os.environ.get("CANDIDATE_PORTAL_URL", os.environ.get("FRONTEND_URL", "http://localhost:5174")).rstrip("/")
+
+
+def _jd_v3_apply_url(mapping_id: str) -> str:
+    """Job-specific /apply link — ?job_id=<mapping_id> lets the form know which
+    client's hard filters to check on submission (see routers/candidates.py:
+    apply_candidate). Query param only, read client-side on page load; the
+    actual submission stays a POST, same as before — see the ApplyForm/ApplyPage
+    handling in candidate-portal."""
+    return f"{_CANDIDATE_PORTAL_URL}/apply?job_id={mapping_id}"
+
+
+def _jd_v3_p_apply_url(mapping_id: str) -> str:
+    return f"{_CANDIDATE_PORTAL_URL}/p-apply?job_id={mapping_id}"
+
+
+# hl_cand_jd_share_5 — sent to candidates who've already filled the form
+# (supersedes hl_cand_jd_share_2 — same buttons, body gained a Role field).
+# STATUS ON META: PENDING as of 2026-07-29 — sends will fail until approved.
+# No header image, 5 body vars (name, company_name, job_title/role,
+# salary-upto, area/location — positional {{1}}/{{2}}/{{3}}/{{4}}/{{5}}).
+# 3 buttons: View Details (URL, dynamic, m.9m.io/{{1}} pattern) straight into
+# the portal dashboard (not job-specific — candidate reviews all their
+# opportunities there once logged in), Update Profile (URL, dynamic, same
+# pattern, deep-links to the portal's Profile tab via ?view=profile), and Not
+# Looking for Job (quick-reply, same as before).
+FF_TEMPLATE = "hl_cand_jd_share_5"
+_FF_VIEW_PATH = os.environ.get("CANDIDATE_INTENT_FF_VIEW_URL", f"{_CANDIDATE_PORTAL_URL}/")
+_FF_PROFILE_PATH = os.environ.get("CANDIDATE_INTENT_FF_PROFILE_URL", f"{_CANDIDATE_PORTAL_URL}/?view=profile")
+
+
 async def send_bulk_intent(
     candidates: list[dict],
     body_components: dict,
@@ -120,7 +158,10 @@ async def send_bulk_intent(
     Each candidate gets unique button payloads encoding their mapping_id so
     we can identify which client-candidate pair they're responding to.
 
-    candidates: [{"phone": "91xxx", "mapping_id": "uuid-str", "name": "Rahul", "intro": "..."}, ...]
+    candidates: [{"phone": "91xxx", "mapping_id": "uuid-str", "name": "Rahul", "intro": "...",
+                  "template_name": "..."}, ...]  — per-candidate "template_name" overrides
+                 the batch-level template_name (used to mix hl_cand_jd_img / hl_cand_jd_img_v3
+                 in the same send based on candidate.form_submitted).
     body_components: shared body_1..body_12 dict
     template_name: override template (defaults to CANDIDATE_INTENT_TEMPLATE env var)
     image_url: optional GCS URL to set as the template image header
@@ -128,40 +169,86 @@ async def send_bulk_intent(
     import asyncio as _asyncio
     import json as _json
     _default_intro = "I am sharing the job details for your review:"
-    _tmpl_name = template_name or os.environ.get("CANDIDATE_INTENT_TEMPLATE", "candidate_share_client_jd")
-    _img_mode = image_url is not None or _tmpl_name.endswith("_img")
+    _batch_tmpl_name = template_name or os.environ.get("CANDIDATE_INTENT_TEMPLATE", "candidate_share_client_jd")
 
-    if _img_mode and not image_url:
+    def _resolve_tmpl(c: dict) -> str:
+        return c.get("template_name") or _batch_tmpl_name
+
+    # FF_TEMPLATE never needs a header image; JD_V3_TEMPLATE and the old
+    # default (hl_cand_jd_img) both do — only require image_url if at least
+    # one candidate in this batch actually resolves to one of those.
+    _non_ff_templates = [_resolve_tmpl(c) for c in candidates if _resolve_tmpl(c) != FF_TEMPLATE]
+    _any_needs_image = bool(_non_ff_templates) and (
+        image_url is not None
+        or _batch_tmpl_name.endswith(("_img", "_v3"))
+        or any(t.endswith(("_img", "_v3")) for t in _non_ff_templates)
+    )
+    _img_mode = _any_needs_image or any(_resolve_tmpl(c) == FF_TEMPLATE for c in candidates)
+
+    if _any_needs_image and not image_url:
         raise ValueError("image_url is required for img-variant templates but was not provided")
 
-    # MSG91 bulk to_and_components does not support image headers.
-    # Use the same individual send_template format that works for client reachout with images.
+    # MSG91 bulk to_and_components does not support image headers (and
+    # FF_TEMPLATE has no header at all) — send each candidate individually,
+    # branching per-candidate on its own resolved template name so a single
+    # batch can freely mix form-filled (FF_TEMPLATE) and not-yet-filled
+    # (JD_V3_TEMPLATE) candidates for the same client.
     if _img_mode:
         sent = 0
         for c in candidates:
             mid = c["mapping_id"]
-            components = [
-                {
-                    "type": "header",
-                    "parameters": [{"type": "image", "image": {"link": image_url}}],
-                },
-                {
-                    "type": "body",
-                    "parameters": [
+            _tmpl_name = _resolve_tmpl(c)
+
+            if _tmpl_name == FF_TEMPLATE:
+                components = [
+                    {"type": "body", "parameters": [
                         {"type": "text", "text": c.get("name") or ""},
-                        {"type": "text", "text": (c.get("intro") or _default_intro) + (f" 📍 Location: {c['maps_url']}" if c.get("maps_url") else "")},
-                    ],
-                },
-                {"type": "button", "sub_type": "quick_reply", "index": "0",
-                 "parameters": [{"type": "payload", "payload": f"INTERESTED|{mid}"}]},
-                {"type": "button", "sub_type": "quick_reply", "index": "1",
-                 "parameters": [{"type": "payload", "payload": f"NOT_INTERESTED_ROLE|{mid}"}]},
-                {"type": "button", "sub_type": "quick_reply", "index": "2",
-                 "parameters": [{"type": "payload", "payload": f"NOT_LOOKING_FOR_JOB|{mid}"}]},
-            ]
+                        {"type": "text", "text": c.get("company_name") or ""},
+                        {"type": "text", "text": c.get("role") or ""},
+                        {"type": "text", "text": c.get("salary") or ""},
+                        {"type": "text", "text": c.get("area") or ""},
+                    ]},
+                    {"type": "button", "sub_type": "url", "index": "0",
+                     "parameters": [{"type": "text", "text": _FF_VIEW_PATH}]},
+                    {"type": "button", "sub_type": "url", "index": "1",
+                     "parameters": [{"type": "text", "text": _FF_PROFILE_PATH}]},
+                    {"type": "button", "sub_type": "quick_reply", "index": "2",
+                     "parameters": [{"type": "payload", "payload": f"NOT_LOOKING_FOR_JOB|{mid}"}]},
+                ]
+            else:
+                body_params = [
+                    {"type": "text", "text": c.get("name") or ""},
+                    {"type": "text", "text": (c.get("intro") or _default_intro) + (f" 📍 Location: {c['maps_url']}" if c.get("maps_url") else "")},
+                ]
+                if _tmpl_name == JD_V3_TEMPLATE:
+                    buttons = [
+                        {"type": "button", "sub_type": "url", "index": "0",
+                         "parameters": [{"type": "text", "text": _jd_v3_apply_url(mid)}]},
+                        {"type": "button", "sub_type": "url", "index": "1",
+                         "parameters": [{"type": "text", "text": _jd_v3_p_apply_url(mid)}]},
+                        {"type": "button", "sub_type": "quick_reply", "index": "2",
+                         "parameters": [{"type": "payload", "payload": f"NOT_LOOKING_FOR_JOB|{mid}"}]},
+                    ]
+                else:
+                    buttons = [
+                        {"type": "button", "sub_type": "quick_reply", "index": "0",
+                         "parameters": [{"type": "payload", "payload": f"INTERESTED|{mid}"}]},
+                        {"type": "button", "sub_type": "quick_reply", "index": "1",
+                         "parameters": [{"type": "payload", "payload": f"NOT_INTERESTED_ROLE|{mid}"}]},
+                        {"type": "button", "sub_type": "quick_reply", "index": "2",
+                         "parameters": [{"type": "payload", "payload": f"NOT_LOOKING_FOR_JOB|{mid}"}]},
+                    ]
+                components = [
+                    {
+                        "type": "header",
+                        "parameters": [{"type": "image", "image": {"link": image_url}}],
+                    },
+                    {"type": "body", "parameters": body_params},
+                    *buttons,
+                ]
             try:
                 result = await send_template(c["phone"], _tmpl_name, "en", components, sender="candidate")
-                print(f"[send_bulk_intent/img] sent to {c['phone']}: {result}")
+                print(f"[send_bulk_intent/img] sent to {c['phone']} using {_tmpl_name}: {result}")
                 sent += 1
             except Exception as e:
                 print(f"[send_bulk_intent/img] failed for {c['phone']}: {e}")
@@ -313,6 +400,44 @@ async def send_interactive_buttons(
                     {"type": "reply", "reply": {"id": b["id"], "title": b["title"]}}
                     for b in buttons
                 ]
+            },
+        },
+    }
+    async with httpx.AsyncClient(timeout=15.0) as http:
+        resp = await http.post(
+            "https://control.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/",
+            json=payload,
+            headers=_headers(),
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def send_interactive_list(
+    phone: str,
+    body_text: str,
+    rows: list[dict],  # [{"id": "...", "title": "...", "description": "..."}]
+    button_label: str = "Select",
+    sender: str = "candidate",
+) -> dict:
+    """Send an interactive list message — same no-template rule as
+    send_interactive_buttons, but for >3 options (WhatsApp reply-button
+    messages cap at 3; list messages allow up to 10 rows)."""
+    payload = {
+        "recipient_number": _candidate_phone(phone) if sender == "candidate" else _format_phone(phone),
+        "integrated_number": _number(sender),
+        "content_type": "interactive",
+        "interactive": {
+            "type": "list",
+            "body": {"text": body_text},
+            "action": {
+                "button": button_label,
+                "sections": [{
+                    "rows": [
+                        {"id": r["id"], "title": r["title"], **({"description": r["description"]} if r.get("description") else {})}
+                        for r in rows
+                    ],
+                }],
             },
         },
     }

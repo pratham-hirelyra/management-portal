@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from database import init_db, close_db
 from routers import clients, candidates, mappings, scraping, whatsapp, pipeline, schedule, admin, cron
-from routers import matching, outreach, ringg, analytics, client_portal, candidate_portal, company_portal
+from routers import matching, outreach, ringg, analytics, client_portal, candidate_portal, company_portal, ce
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -54,6 +54,7 @@ app.include_router(analytics.router)
 app.include_router(client_portal.router)
 app.include_router(candidate_portal.router)
 app.include_router(company_portal.router)
+app.include_router(ce.router)
 
 
 @app.exception_handler(Exception)

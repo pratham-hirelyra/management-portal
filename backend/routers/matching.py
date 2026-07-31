@@ -61,10 +61,10 @@ from services.mms_service import score_candidates
 router = APIRouter(prefix="/matching", tags=["matching"])
 
 # ── constants ─────────────────────────────────────────────────────────────────
-SLOT_REQUEST_THRESHOLD = 7  # high-quality (mms >= MMS_GATE) candidates needed before asking the client for interview slots
-POOL_CAP = 25               # total candidate pool target per client — sourcing/reach-out continues until this is reached
-SINGLE_RUN_CAP = 12         # max candidates inserted in one auto-matchmake tap
-GLOBAL_CAP = 300
+SLOT_REQUEST_THRESHOLD = 35  # high-quality (mms >= MMS_GATE) candidates needed before asking the client for interview slots
+POOL_CAP = 750               # total candidate pool target per client — sourcing/reach-out continues until this is reached
+SINGLE_RUN_CAP = 35         # max candidates inserted in one auto-matchmake tap
+GLOBAL_CAP = 1500
 MMS_GATE = 70.0
 
 # matching_state values:
@@ -145,8 +145,8 @@ async def _free_pool_evaluated(client_id: uuid.UUID, conn: asyncpg.Connection) -
               SELECT COUNT(*) FROM client_candidate_mappings ccm
               WHERE ccm.candidate_id = c.id
                 AND ccm.stage::text NOT IN (
-                    'placed','rejected','not_interested','not_looking_for_job',
-                    'declined_for_interview','waitlisted'
+                    'placed','rejected','rejected_by_client','not_interested','not_looking_for_job',
+                    'declined_for_interview','waitlisted','client_closed'
                 )
           ) < 3
         """,
@@ -459,6 +459,7 @@ async def _fill_pool_and_route(
     active_mappings: int,
     conn: asyncpg.Connection,
     include_muslim: bool = True,
+    trigger_path2: bool = True,
 ) -> dict:
     """Lock/map as many qualifying free candidates (mms >= MMS_GATE, not dnd_flagged)
     as fit within POOL_CAP, then:
@@ -471,6 +472,8 @@ async def _fill_pool_and_route(
     new_scored: scored free-pool candidates (not yet mapped to this client).
     active_mappings: count of already-mapped, non-terminal, Pass+mms>=MMS_GATE candidates.
     """
+    if client.get("stage") in ("churned", "disqualified", "deal_won"):
+        return {"decision": "client_inactive", "high_quality_free": 0, "active_total": active_mappings, "pool_cap": POOL_CAP}
     if client.get("stop_sourcing"):
         return {"decision": "stop_sourcing", "high_quality_free": 0, "active_total": active_mappings, "pool_cap": POOL_CAP}
 
@@ -496,9 +499,13 @@ async def _fill_pool_and_route(
         "high_quality_free": high_quality_free,
         "active_total":      active_total,
         "pool_cap":          POOL_CAP,
+        # Candidates just inserted as 'matched' above — callers that don't run
+        # their own wa_sent_at IS NULL catch-up (e.g. on_evaluation_complete's
+        # pool top-up) need this to know who still needs their JD queued.
+        "newly_matched":     qualifying,
     }
 
-    if active_total < POOL_CAP:
+    if trigger_path2 and active_total < POOL_CAP:
         result["path2"] = await _trigger_path2(client_id, client, active_total, conn, include_muslim=include_muslim)
 
     result["decision"] = "path2" if "path2" in result else "capped"
@@ -535,6 +542,8 @@ async def _send_jd_to_candidates(
         jd_card_url = None
 
     mapping_rows: list[dict] = []
+    area = client.get("job_location") or client.get("location") or ""
+    salary = str(int(client["max_salary"])) if client.get("max_salary") else ""
 
     for cand in candidates:
         cid = cand["id"]
@@ -578,6 +587,11 @@ async def _send_jd_to_candidates(
             "candidate_id": cid,
             "name": first_name,
             "intro": _jd_intro(cand, client),
+            "template_name": msg91.FF_TEMPLATE if cand.get("form_submitted") else msg91.JD_V3_TEMPLATE,
+            "area": area,
+            "salary": salary,
+            "company_name": client.get("company_name") or "",
+            "role": client.get("job_title") or "",
         })
 
     if not mapping_rows:
@@ -1180,14 +1194,17 @@ async def on_evaluation_complete(
                c.name AS candidate_name, c.phone
         FROM client_candidate_mappings ccm
         JOIN candidates c ON c.id = ccm.candidate_id
+        JOIN clients    cl ON cl.id = ccm.client_id
         WHERE ccm.candidate_id = $1
           AND ccm.stage NOT IN (
                 'not_interested'::mapping_stage,
                 'rejected'::mapping_stage,
                 'placed'::mapping_stage,
                 'interview_done'::mapping_stage,
-                'interview_scheduled'::mapping_stage
+                'interview_scheduled'::mapping_stage,
+                'client_closed'::mapping_stage
               )
+          AND cl.stage NOT IN ('churned'::client_stage, 'disqualified'::client_stage, 'deal_won'::client_stage)
         """,
         candidate_id,
     )
@@ -1258,7 +1275,7 @@ async def on_evaluation_complete(
             else:
                 # Move to approval queue regardless of whether client has slots yet —
                 # RM reviews the candidate first, slots are collected separately.
-                await conn.execute(
+                moved = await conn.execute(
                     """
                     UPDATE client_candidate_mappings
                     SET stage = 'client_approval_pending'::mapping_stage, updated_at = now()
@@ -1277,6 +1294,12 @@ async def on_evaluation_complete(
                         m["mapping_id"], candidate_id, phone, name, client, conn,
                     ):
                         waiting_sent += 1
+                if moved != "UPDATE 0":
+                    try:
+                        from services.flow_engine import notify_client_pending_review
+                        await notify_client_pending_review(cid, name or "A candidate", conn)
+                    except Exception as e:
+                        print(f"[matching] client pending-review notify error for mapping {m['mapping_id']}: {e}")
         else:
             # Candidate's evaluation came back but they don't qualify for this client
             # (mms < 70 / filter failed / DND). Release them so other clients can match,
@@ -1329,7 +1352,19 @@ async def on_evaluation_complete(
                 )
                 already_mapped_ids = {str(r["candidate_id"]) for r in existing_rows}
                 new_scored = [s for s in scored if str(s["id"]) not in already_mapped_ids]
-                await _fill_pool_and_route(cid, client, new_scored, total_active, conn)
+                # on_evaluation_complete only maps already-evaluated free-pool
+                # candidates here — it does NOT trigger Path 2 (null-eval
+                # sourcing/JD outreach to new candidates). That stays exclusive
+                # to decision_point (the original auto-matchmaking flow on
+                # client onboarding / manual re-match).
+                fill_result = await _fill_pool_and_route(cid, client, new_scored, total_active, conn, trigger_path2=False)
+                # Queue (not send) the JD for whatever just got mapped into
+                # 'matched' above — decision_point has its own wa_sent_at
+                # IS NULL catch-up query, but this top-up path doesn't, so
+                # without this these mappings sit in 'matched' forever.
+                newly_matched = fill_result.get("newly_matched") or []
+                if newly_matched:
+                    await _send_jd_to_candidates(cid, client, newly_matched, conn)
             elif client.get("matching_state") in ("path2_a", "path2_b"):
                 await _trigger_path1(cid, client, conn)
             reruns += 1
@@ -1396,7 +1431,7 @@ async def inject_sourced(
             digits = digits[2:]
         phone_db = digits if len(digits) == 10 else c.phone
 
-        lat, lng = geo_cache.get(c.location, (None, None)) if c.location else (None, None)
+        lat, lng, city, state = geo_cache.get(c.location, (None, None, None, None)) if c.location else (None, None, None, None)
         source_val = c.source or "sourced"
         # Convert annual salary to monthly (Apna and most portals send annual figures)
         monthly_salary = (c.salary / 12) if c.salary and c.salary > 50000 else c.salary
@@ -1405,10 +1440,10 @@ async def inject_sourced(
             """
             INSERT INTO candidates (
                 name, phone, source, source_id,
-                current_location, location_lat, location_lng,
+                current_location, location_lat, location_lng, city, state,
                 current_salary, gender, form_submitted, is_active, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, true, now(), now())
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false, true, now(), now())
             ON CONFLICT (phone) DO UPDATE
                 SET name             = EXCLUDED.name,
                     source           = EXCLUDED.source,
@@ -1416,6 +1451,8 @@ async def inject_sourced(
                     current_location = COALESCE(EXCLUDED.current_location, candidates.current_location),
                     location_lat     = COALESCE(EXCLUDED.location_lat, candidates.location_lat),
                     location_lng     = COALESCE(EXCLUDED.location_lng, candidates.location_lng),
+                    city             = COALESCE(EXCLUDED.city, candidates.city),
+                    state            = COALESCE(EXCLUDED.state, candidates.state),
                     current_salary   = CASE WHEN candidates.form_submitted
                                          THEN candidates.current_salary
                                          ELSE COALESCE(EXCLUDED.current_salary, candidates.current_salary)
@@ -1425,7 +1462,7 @@ async def inject_sourced(
             RETURNING id, name, phone
             """,
             c.name, phone_db, source_val, c.source_id,
-            c.location, lat, lng, monthly_salary, c.gender,
+            c.location, lat, lng, city, state, monthly_salary, c.gender,
         )
         if str(row["id"]) not in already_mapped:
             to_send.append({"id": row["id"], "name": row["name"], "phone": row["phone"]})
@@ -1437,6 +1474,78 @@ async def inject_sourced(
             "injected": len(to_send),
             "jd_sent": sent,
             "skipped_already_mapped": len(body) - len(to_send),
+        },
+        "ok": True,
+    }
+
+
+@router.post("/inject-sourced")
+async def inject_sourced_global(
+    body: list[SourcingCandidate],
+    conn: asyncpg.Connection = Depends(get_conn),
+):
+    """
+    Insert externally sourced candidates straight into the free pool — no
+    client involved, no JD sent. They sit exactly like any other sourced
+    candidate (source='sourced', form_submitted=false) and only get matched to
+    a client once the normal matching flow (decision_point / on_evaluation_complete)
+    or a manual /inject-sourced/{client_id} call picks them up.
+    """
+    from routers.clients import geocode
+
+    # Geocode unique locations up front
+    import re as _re
+    unique_locs = list({c.location for c in body if c.location})
+    geo_cache: dict[str, tuple] = {}
+    for loc in unique_locs:
+        geo_cache[loc] = await geocode(loc)
+
+    inserted: list[dict] = []
+    for c in body:
+        digits = _re.sub(r"\D", "", c.phone)
+        if len(digits) == 12 and digits.startswith("91"):
+            digits = digits[2:]
+        phone_db = digits if len(digits) == 10 else c.phone
+
+        lat, lng, city, state = geo_cache.get(c.location, (None, None, None, None)) if c.location else (None, None, None, None)
+        source_val = c.source or "sourced"
+        # Convert annual salary to monthly (Apna and most portals send annual figures)
+        monthly_salary = (c.salary / 12) if c.salary and c.salary > 50000 else c.salary
+
+        row = await conn.fetchrow(
+            """
+            INSERT INTO candidates (
+                name, phone, source, source_id,
+                current_location, location_lat, location_lng, city, state,
+                current_salary, gender, form_submitted, is_active, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false, true, now(), now())
+            ON CONFLICT (phone) DO UPDATE
+                SET name             = EXCLUDED.name,
+                    source           = EXCLUDED.source,
+                    source_id        = COALESCE(EXCLUDED.source_id, candidates.source_id),
+                    current_location = COALESCE(EXCLUDED.current_location, candidates.current_location),
+                    location_lat     = COALESCE(EXCLUDED.location_lat, candidates.location_lat),
+                    location_lng     = COALESCE(EXCLUDED.location_lng, candidates.location_lng),
+                    city             = COALESCE(EXCLUDED.city, candidates.city),
+                    state            = COALESCE(EXCLUDED.state, candidates.state),
+                    current_salary   = CASE WHEN candidates.form_submitted
+                                         THEN candidates.current_salary
+                                         ELSE COALESCE(EXCLUDED.current_salary, candidates.current_salary)
+                                     END,
+                    gender           = COALESCE(EXCLUDED.gender, candidates.gender),
+                    updated_at       = now()
+            RETURNING id, name, phone
+            """,
+            c.name, phone_db, source_val, c.source_id,
+            c.location, lat, lng, city, state, monthly_salary, c.gender,
+        )
+        inserted.append({"id": str(row["id"]), "name": row["name"], "phone": row["phone"]})
+
+    return {
+        "data": {
+            "injected": len(inserted),
+            "candidates": inserted,
         },
         "ok": True,
     }

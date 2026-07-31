@@ -332,7 +332,7 @@ async def trigger_ai_call(candidate_id, phone: str, name: str = "", retry_on_no_
 
     # RinggAI treats naive datetimes as IST — send IST time (UTC+5:30)
     IST_OFFSET_SECS = 19800  # 5h30m
-    scheduled_at = _dt.datetime.utcfromtimestamp(_time.time() + 300 + IST_OFFSET_SECS).strftime("%Y-%m-%dT%H:%M:%S")
+    scheduled_at = _dt.datetime.utcfromtimestamp(_time.time() + 120 + IST_OFFSET_SECS).strftime("%Y-%m-%dT%H:%M:%S")
     print(f"[ringg] scheduled_at (IST): {scheduled_at}")
 
     payload = {

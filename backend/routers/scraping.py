@@ -4,6 +4,7 @@ from fastapi.encoders import jsonable_encoder
 import asyncpg
 from database import get_conn, get_pool
 from services.scraper_service import call_scraper
+from services import city_service
 import os
 
 router = APIRouter(prefix="/clients", tags=["scraping"])
@@ -18,14 +19,14 @@ SCRAPER_ENV_KEYS = {
 }
 
 
-_ALLOWED_CITIES = ("ahmedabad", "gandhinagar")
-
-def _is_allowed_location(client_data: dict) -> bool:
-    for field in ("city", "location", "job_location"):
-        val = (client_data.get(field) or "").lower()
-        if any(city in val for city in _ALLOWED_CITIES):
-            return True
-    return False
+async def _is_allowed_location(conn: asyncpg.Connection, client_data: dict) -> bool:
+    """DB-backed allow-list (active_cities) — activating a new city is a data
+    change only, never a code change. Falls back to substring-matching the
+    free-text location/job_location fields when client_data.city isn't set yet."""
+    fallback_text = " ".join(
+        str(client_data.get(f) or "") for f in ("location", "job_location")
+    )
+    return await city_service.is_active_city(conn, client_data.get("city"), fallback_text=fallback_text)
 
 
 async def _run_scraper(job_id: str, client_id: str, scraper_type: str, client_data: dict):
@@ -45,7 +46,7 @@ async def _run_scraper(job_id: str, client_id: str, scraper_type: str, client_da
                 uuid.UUID(job_id),
             )
 
-            if not _is_allowed_location(client_data):
+            if not await _is_allowed_location(conn, client_data):
                 await conn.execute(
                     "UPDATE clients SET stage = 'disqualified'::client_stage, updated_at = now() WHERE id = $1",
                     uuid.UUID(client_id),
