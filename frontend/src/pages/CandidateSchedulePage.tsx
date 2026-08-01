@@ -139,7 +139,7 @@ export default function CandidateSchedulePage() {
               </a>
             </div>
           )}
-          <p className="mt-8 text-xs text-gray-300">Powered by Just Accountants</p>
+          <p className="mt-8 text-xs text-gray-300">Powered by Hire Lyra</p>
         </div>
       </div>
     )
@@ -163,7 +163,7 @@ export default function CandidateSchedulePage() {
           <HiringFunnel stages={INTERVIEW_FUNNEL} className="mb-6" />
 
           <p className="mt-2 text-xs text-gray-400">You'll receive a WhatsApp message with further details shortly.</p>
-          <p className="mt-6 text-xs text-gray-300">Powered by Just Accountants</p>
+          <p className="mt-6 text-xs text-gray-300">Powered by Hire Lyra</p>
         </div>
       </div>
     )
@@ -193,10 +193,10 @@ export default function CandidateSchedulePage() {
         <div className="md:w-80 shrink-0 border-b md:border-b-0 md:border-r border-gray-200 px-8 py-10 overflow-y-auto">
           <img
             src="https://storage.googleapis.com/hirelyra-website/images/unnamed%20(1).jpg"
-            alt="Just Accountants"
+            alt="Hire Lyra"
             className="w-10 h-10 rounded-xl object-cover mb-5"
           />
-          <p className="text-xs text-gray-400 uppercase tracking-widest mb-1">Just Accountants</p>
+          <p className="text-xs text-gray-400 uppercase tracking-widest mb-1">Hire Lyra</p>
           <h1 className="text-lg font-bold text-gray-900 leading-snug mb-1">{info.company_name}</h1>
           {info.job_title && (
             <p className="text-sm font-medium text-blue-600 mb-1">{info.job_title}</p>
@@ -350,7 +350,7 @@ export default function CandidateSchedulePage() {
             </div>
           )}
 
-          <p className="mt-8 text-xs text-gray-300">Powered by Just Accountants</p>
+          <p className="mt-8 text-xs text-gray-300">Powered by Hire Lyra</p>
         </div>
       </div>
     </div>

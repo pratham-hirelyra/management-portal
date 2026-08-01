@@ -227,7 +227,7 @@ export default function HandoverPage() {
     <div className="min-h-screen bg-gray-50 py-8 px-4">
       <div className="max-w-4xl mx-auto">
         <div className="mb-8 text-center">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-1">JustAccountants</p>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-1">HireLyra</p>
           <h1 className="text-2xl font-bold text-gray-900">Interview-Ready Candidates</h1>
           <p className="text-sm text-gray-500 mt-1">
             {client.job_title} · {client.company_name}
@@ -323,7 +323,7 @@ export default function HandoverPage() {
           </div>
         )}
 
-        <p className="text-center text-xs text-gray-300 mt-8 pb-4">Powered by JustAccountants</p>
+        <p className="text-center text-xs text-gray-300 mt-8 pb-4">Powered by HireLyra</p>
       </div>
     </div>
   )

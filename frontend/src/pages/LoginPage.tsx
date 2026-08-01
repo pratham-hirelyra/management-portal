@@ -24,11 +24,11 @@ export default function LoginPage() {
         <div className="text-center mb-8">
           <img
             src="https://storage.googleapis.com/hirelyra-website/images/unnamed%20(1).jpg"
-            alt="Just Accountants"
+            alt="Hire Lyra"
             className="w-14 h-14 rounded-xl mx-auto mb-3 object-cover"
           />
           <h1 className="text-lg font-bold text-gray-900">Management Portal</h1>
-          <p className="text-xs text-gray-400 mt-0.5">Just Accountants</p>
+          <p className="text-xs text-gray-400 mt-0.5">Hire Lyra</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
