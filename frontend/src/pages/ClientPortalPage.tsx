@@ -739,7 +739,7 @@ export default function ClientPortalPage() {
         {/* Header */}
         <div className="text-center mb-6">
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">
-            JustAccountants · Client Portal
+            HireLyra · Client Portal
           </p>
           <h1 className="text-xl font-bold text-gray-900">{data.client.company_name}</h1>
           <p className="text-sm text-gray-500 mt-0.5">{data.client.job_title}</p>

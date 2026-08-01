@@ -269,7 +269,7 @@ function CEDashboard({ ceId, ceInfo }: { ceId: string; ceInfo: CEInfo }) {
       <div className="bg-[#0d2b5e] px-5 pt-8 pb-5">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-white/50 text-xs font-semibold uppercase tracking-widest mb-1">JustAccountants</p>
+            <p className="text-white/50 text-xs font-semibold uppercase tracking-widest mb-1">HireLyra</p>
             <h1 className="text-white text-lg font-bold">{ceInfo.name}</h1>
             <p className="text-white/50 text-xs mt-0.5">{ceInfo.tier === 'top_end' ? 'Top End' : 'Bottom End'} · Cap {ceInfo.max_clients_per_day}/day</p>
           </div>
@@ -379,7 +379,7 @@ export default function CEPage() {
     return (
       <div className="min-h-dvh flex flex-col items-center justify-center bg-[#f4f6fb] px-6">
         <div className="w-full max-w-xs">
-          <p className="text-gray-400 text-xs font-semibold uppercase tracking-widest mb-1 text-center">JustAccountants</p>
+          <p className="text-gray-400 text-xs font-semibold uppercase tracking-widest mb-1 text-center">HireLyra</p>
           <h1 className="text-[#0d2b5e] text-xl font-bold text-center mb-6">Customer Executive Login</h1>
           <input
             type="password" placeholder="Enter PIN" value={pin}

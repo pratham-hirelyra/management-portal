@@ -166,7 +166,7 @@ export default function SchedulePage() {
           <p className="text-sm text-gray-500 leading-relaxed">
             You have already shared your availability. Our team is reviewing the candidates and will reach out to you shortly.
           </p>
-          <p className="mt-8 text-xs text-gray-300">Powered by Just Accountants</p>
+          <p className="mt-8 text-xs text-gray-300">Powered by Hire Lyra</p>
         </div>
       </div>
     )
@@ -199,7 +199,7 @@ export default function SchedulePage() {
             <HiringFunnel stages={SCHEDULE_FUNNEL} />
           </div>
 
-          <p className="mt-8 text-xs text-gray-300">Powered by Just Accountants</p>
+          <p className="mt-8 text-xs text-gray-300">Powered by Hire Lyra</p>
         </div>
       </div>
     )
@@ -251,10 +251,10 @@ export default function SchedulePage() {
         <div className="md:w-72 shrink-0 border-b md:border-b-0 md:border-r border-gray-200 px-8 py-10">
           <img
             src="https://storage.googleapis.com/hirelyra-website/images/unnamed%20(1).jpg"
-            alt="Just Accountants"
+            alt="Hire Lyra"
             className="w-10 h-10 rounded-xl object-cover mb-5"
           />
-          <p className="text-xs text-gray-400 uppercase tracking-widest mb-1">Just Accountants</p>
+          <p className="text-xs text-gray-400 uppercase tracking-widest mb-1">Hire Lyra</p>
           <h1 className="text-lg font-bold text-gray-900 leading-snug mb-4">
             {schedule.company_name}
           </h1>
@@ -431,7 +431,7 @@ export default function SchedulePage() {
             )}
           </div>
 
-          <p className="mt-8 text-xs text-gray-300">Powered by Just Accountants</p>
+          <p className="mt-8 text-xs text-gray-300">Powered by Hire Lyra</p>
         </div>
       </div>
     </div>

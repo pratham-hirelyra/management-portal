@@ -64,7 +64,7 @@ export default function FeedbackPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-8 text-center">
         <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-6">
-          JustAccountants · {isClient ? 'Client Feedback' : 'Candidate Feedback'}
+          HireLyra · {isClient ? 'Client Feedback' : 'Candidate Feedback'}
         </p>
 
         <h1 className="text-base font-bold text-gray-900 mb-1">{question}</h1>
