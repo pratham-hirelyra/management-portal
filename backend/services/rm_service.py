@@ -2,8 +2,8 @@
 RM auto-assignment and WhatsApp intro notification.
 """
 import asyncio
-import os
 import asyncpg
+import constants.whatsapp_templates as WT
 
 
 async def assign_rm(client_id: str, city: str | None, conn: asyncpg.Connection) -> dict | None:
@@ -64,7 +64,7 @@ async def send_rm_intro(
     """
     import services.msg91_service as msg91
 
-    tpl = template_name or os.environ.get("RM_INTRO_TEMPLATE", "client_share_rm_details")
+    tpl = template_name or WT.RM_INTRO
     print(f"[rm_intro] Sending template={tpl} to poc={poc_phone} rm={rm_name}/{rm_phone}")
     components = [
         {

@@ -1,10 +1,10 @@
-import os
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
 import asyncpg
 from database import get_conn
 from pydantic import BaseModel
 from typing import List
+import constants.whatsapp_templates as WT
 
 router = APIRouter(prefix="/client-portal", tags=["client-portal"])
 
@@ -499,7 +499,7 @@ async def reject_candidate_for_client(
     if row["candidate_phone"]:
         try:
             import services.msg91_service as msg91
-            template = os.environ.get("CANDIDATE_NOT_FIT_CLIENT_TEMPLATE", "").strip()
+            template = WT.CANDIDATE_NOT_FIT_CLIENT
             if template:
                 components = [{"type": "body", "parameters": [
                     {"type": "text", "text": row["candidate_name"] or ""},
@@ -566,7 +566,7 @@ async def submit_slots(
         try:
             import services.msg91_service as msg91
             slot_lines = "\n".join(f"  • {s}" for s in body.slots)
-            template = os.environ.get("CLIENT_SLOTS_RECEIVED_TEMPLATE", "").strip()
+            template = WT.CLIENT_SLOTS_RECEIVED
             if template:
                 components = [{"type": "body", "parameters": [
                     {"type": "text", "text": slot_lines},

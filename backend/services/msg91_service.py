@@ -1,5 +1,6 @@
 import os
 import httpx
+import constants.whatsapp_templates as WT
 
 BASE_URL = "https://api.msg91.com/api/v5/whatsapp"
 
@@ -115,7 +116,7 @@ async def send_template(
 # tracked m.9m.io/... link at send time; a bare path segment gets rejected
 # with "Invalid URL in Button Component". Not-Interested points at /p-apply,
 # a page that doesn't exist on the frontend yet.
-JD_V3_TEMPLATE = "hl_cand_jd_img_v3"
+JD_V3_TEMPLATE = WT.CANDIDATE_JD_IMG
 _CANDIDATE_PORTAL_URL = os.environ.get("CANDIDATE_PORTAL_URL", os.environ.get("FRONTEND_URL", "http://localhost:5174")).rstrip("/")
 
 
@@ -142,7 +143,7 @@ def _jd_v3_p_apply_url(mapping_id: str) -> str:
 # opportunities there once logged in), Update Profile (URL, dynamic, same
 # pattern, deep-links to the portal's Profile tab via ?view=profile), and Not
 # Looking for Job (quick-reply, same as before).
-FF_TEMPLATE = "hl_cand_jd_share_5"
+FF_TEMPLATE = WT.CANDIDATE_JD_SHARE_5
 _FF_VIEW_PATH = os.environ.get("CANDIDATE_INTENT_FF_VIEW_URL", f"{_CANDIDATE_PORTAL_URL}/")
 _FF_PROFILE_PATH = os.environ.get("CANDIDATE_INTENT_FF_PROFILE_URL", f"{_CANDIDATE_PORTAL_URL}/?view=profile")
 
@@ -169,7 +170,7 @@ async def send_bulk_intent(
     import asyncio as _asyncio
     import json as _json
     _default_intro = "I am sharing the job details for your review:"
-    _batch_tmpl_name = template_name or os.environ.get("CANDIDATE_INTENT_TEMPLATE", "candidate_share_client_jd")
+    _batch_tmpl_name = template_name or WT.CANDIDATE_INTENT
 
     def _resolve_tmpl(c: dict) -> str:
         return c.get("template_name") or _batch_tmpl_name

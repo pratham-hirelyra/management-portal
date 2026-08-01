@@ -11,10 +11,11 @@ from pydantic import BaseModel
 import services.msg91_service as msg91
 import services.flow_engine as flow_engine
 import asyncio
+import constants.whatsapp_templates as WT
 
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 
-_CANDIDATE_INTENT_TEMPLATE = os.environ.get("CANDIDATE_INTENT_TEMPLATE", "candidate_share_client_jd")
+_CANDIDATE_INTENT_TEMPLATE = WT.CANDIDATE_INTENT
 
 
 # ── Request bodies ────────────────────────────────────────────────────────────
@@ -306,7 +307,7 @@ async def _send_onboarding_link(phone: str, client_id: str = "") -> None:
     """Send the client onboarding form link after they show interest."""
     frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5174")
     onboarding_url = f"{frontend_url}/client-onboard"
-    template = os.environ.get("CLIENT_ONBOARDING_TEMPLATE", "").strip()
+    template = WT.CLIENT_ONBOARDING
     if template:
         components = [{"type": "body", "parameters": [{"type": "text", "text": onboarding_url}]}]
         await msg91.send_template(phone, template, "en", components, sender="client")
@@ -352,7 +353,7 @@ async def _post_agree_actions(conn, client_id) -> None:
             ]
             await msg91.send_template(
                 client["poc_phone"],
-                os.environ.get("CLIENT_AGREEMENT_CONFIRMED_TEMPLATE", "client_agreement_confirmed"),
+                WT.CLIENT_AGREEMENT_CONFIRMED,
                 "en",
                 pdf_components,
                 sender="client",
@@ -367,7 +368,7 @@ async def _post_agree_actions(conn, client_id) -> None:
     # points at the OTP-based client-portal app (CLIENT_PORTAL_URL), not the
     # legacy token-based /client/{feedback_token} page in this frontend.
     try:
-        portal_template = os.environ.get("CLIENT_PORTAL_LINK_TEMPLATE", "client_portal_link_v1").strip()
+        portal_template = WT.CLIENT_PORTAL_LINK
         already_sent_portal_link = await conn.fetchval(
             """
             SELECT 1 FROM whatsapp_messages
@@ -1572,7 +1573,7 @@ async def send_client_agreement(
     if not client["agreement_url"]:
         raise HTTPException(400, "Generate the agreement PDF first")
 
-    template = os.environ.get("CLIENT_AGREEMENT_TEMPLATE", "client_send_agreement")
+    template = WT.CLIENT_AGREEMENT
 
     # Body variables: {{1}} = poc_name, {{2}} = agreement_url
     # Button payloads encode client_id so webhook knows which client responded
@@ -1628,7 +1629,7 @@ async def send_client_availability(
     if not client["poc_phone"]:
         raise HTTPException(400, "Client has no POC phone number")
 
-    template = os.environ.get("CLIENT_AVAILABILITY_TEMPLATE", "")
+    template = WT.CLIENT_AVAILABILITY
     if not template:
         raise HTTPException(400, "CLIENT_AVAILABILITY_TEMPLATE env var not set")
 

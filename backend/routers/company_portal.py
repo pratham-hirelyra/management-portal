@@ -22,6 +22,7 @@ from routers.client_portal import (
     invite_candidate_for_client,
     reject_candidate_for_client,
 )
+import constants.whatsapp_templates as WT
 
 router = APIRouter(prefix="/company-portal", tags=["company-portal"])
 
@@ -87,7 +88,7 @@ async def send_otp(body: SendOtpBody, conn: asyncpg.Connection = Depends(get_con
         import services.msg91_service as msg91
         # Reuses the candidate-portal AUTHENTICATION template by default — pass
         # CLIENT_OTP_TEMPLATE if/when a client-branded template is approved in Meta.
-        otp_template = os.environ.get("CLIENT_OTP_TEMPLATE", os.environ.get("CANDIDATE_OTP_TEMPLATE", "hl_cand_otp_v2")).strip()
+        otp_template = WT.CLIENT_OTP
         components = [
             {"type": "body", "parameters": [{"type": "text", "text": otp}]},
             {"type": "button", "sub_type": "url", "index": "0", "parameters": [{"type": "text", "text": otp}]},
@@ -637,7 +638,7 @@ async def hire_candidate(
         try:
             import services.msg91_service as msg91
             from services.flow_engine import candidate_portal_deep_link
-            template = os.environ.get("JOIN_INTENT_TEMPLATE", "hl_cand_join_intent_v1").strip()
+            template = WT.CANDIDATE_JOIN_INTENT
             portal_url = os.environ.get("CANDIDATE_PORTAL_URL", "https://careers.justaccountants.in").rstrip("/")
             deep_link = candidate_portal_deep_link(mid, "join-intent")
             if template:
@@ -725,7 +726,7 @@ async def final_hire(
     try:
         import services.msg91_service as msg91
         from services.flow_engine import candidate_portal_deep_link
-        template = os.environ.get("OFFER_TEMPLATE", "hl_cand_offer_v1").strip()
+        template = WT.CANDIDATE_OFFER
         salary_str = f"{int(body.offered_salary):,}"
         if template:
             components = [

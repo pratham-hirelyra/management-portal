@@ -57,6 +57,7 @@ import asyncpg
 from database import get_conn
 from services.filter_service import filter_candidates
 from services.mms_service import score_candidates
+import constants.whatsapp_templates as WT
 
 router = APIRouter(prefix="/matching", tags=["matching"])
 
@@ -336,7 +337,7 @@ async def _trigger_path1(client_id: uuid.UUID, client: dict, conn: asyncpg.Conne
     frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")
     feedback_token = client.get("feedback_token")
     portal_url = f"{frontend_url}/client/{feedback_token}" if feedback_token else f"{frontend_url}/schedule/{client_id}"
-    template = os.environ.get("CLIENT_SLOT_TEMPLATE", "").strip()
+    template = WT.CLIENT_SLOT
     try:
         if template:
             components = [{"type": "body", "parameters": [
@@ -663,16 +664,16 @@ async def _send_slot_message_to_candidate(
 
     # v4 is the only surviving button version — v2 (MARKETING) and v3
     # (superseded, no "Action Required") were deleted from Meta.
-    _SLOT_SELECT_BUTTON_TEMPLATES = {"hl_cand_slot_select_v4"}
+    _SLOT_SELECT_BUTTON_TEMPLATES = {WT.CANDIDATE_SLOT_SELECT}
     # round2_v3 had a button with a hardcoded (non-dynamic) URL — broken,
     # would've sent every candidate to the same sample link — deleted from
     # Meta. round2_v4 is the surviving version with a real {{1}} param.
-    _ROUND2_BUTTON_TEMPLATES = {"hl_cand_slot_select_round2_v4"}
+    _ROUND2_BUTTON_TEMPLATES = {WT.CANDIDATE_SLOT_SELECT_ROUND2}
 
     portal_url = os.environ.get("CANDIDATE_PORTAL_URL", os.environ.get("FRONTEND_URL", "http://localhost:5174")).rstrip("/")
     slot_url = f"{portal_url}/c/{candidate_id}"
-    template = os.environ.get("CANDIDATE_SLOT_SELECT_TEMPLATE", "").strip()
-    round2_template = os.environ.get("CANDIDATE_SLOT_SELECT_ROUND2_TEMPLATE", "").strip()
+    template = WT.CANDIDATE_SLOT_SELECT
+    round2_template = WT.CANDIDATE_SLOT_SELECT_ROUND2
     try:
         if is_round2 and round2_template in _ROUND2_BUTTON_TEMPLATES:
             components = [
@@ -786,7 +787,7 @@ async def _send_waiting_message(
     if already:
         return False
 
-    template = os.environ.get("CANDIDATE_WAITING_TEMPLATE", "").strip()
+    template = WT.CANDIDATE_WAITING
     try:
         if template:
             components = [{"type": "body", "parameters": [
@@ -844,7 +845,7 @@ async def _send_role_not_fit_message(
     if not phone:
         return False
     import services.msg91_service as msg91
-    template = os.environ.get("CANDIDATE_ROLE_NOT_FIT_TEMPLATE", "").strip()
+    template = WT.CANDIDATE_ROLE_NOT_FIT
     try:
         if template == "hl_cand_role_not_fit_v2":
             # v2 template's approved body has a 4th placeholder for the reason.
@@ -898,7 +899,7 @@ async def _send_waitlisted_message(
     if already:
         return False
 
-    template = os.environ.get("CANDIDATE_WAITLISTED_TEMPLATE", "").strip()
+    template = WT.CANDIDATE_WAITLISTED
     try:
         if template:
             components = [{"type": "body", "parameters": [
@@ -946,7 +947,7 @@ async def _notify_waitlisted_position_closed(client_id: uuid.UUID, client: dict,
     if not rows:
         return 0
 
-    template = os.environ.get("CANDIDATE_POSITION_CLOSED_TEMPLATE", "").strip()
+    template = WT.CANDIDATE_POSITION_CLOSED
     company = client.get("company_name") or ""
     sent = 0
     for r in rows:
@@ -1875,7 +1876,7 @@ async def _send_interview_confirmed_to_candidate(mapping_id: str, slot_label: st
 
         location_text = maps_url or row.get("job_location") or "Location TBD"
 
-        template_name = os.environ.get("CANDIDATE_INTERVIEW_CONFIRM_TEMPLATE", "candidate_interview_confirmation")
+        template_name = WT.CANDIDATE_INTERVIEW_CONFIRM
         components = [
             {
                 "type": "body",
