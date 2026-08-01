@@ -9,6 +9,7 @@ from database import get_conn
 from models.client import ClientCreate, ClientUpdate, StageUpdateRequest, _normalize_job_title
 from pydantic import BaseModel
 from typing import Optional, List
+import constants.whatsapp_templates as WT
 
 
 async def geocode(address: str) -> tuple[float | None, float | None, str | None, str | None]:
@@ -213,7 +214,7 @@ async def _generate_and_send_agreement(client_id: str, raise_on_error: bool = Fa
         agreement_page_url = f"{frontend_url}/agreement/{token}"
 
         # Send WhatsApp template
-        template = os.environ.get("CLIENT_AGREEMENT_TEMPLATE", "client_send_agreement")
+        template = WT.CLIENT_AGREEMENT
         poc_name = client["poc_name"] or client["company_name"] or "there"
         components = [
             {
@@ -1545,7 +1546,7 @@ async def _send_search_started(client_id: str) -> None:
         poc_name  = client["poc_name"] or "there"
         if not poc_phone:
             return
-        template = os.environ.get("CLIENT_SEARCH_STARTED_TEMPLATE", "").strip()
+        template = WT.CLIENT_SEARCH_STARTED
         try:
             if template:
                 await msg91.send_template(

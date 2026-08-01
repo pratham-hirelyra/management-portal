@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from typing import Any
 import asyncpg
 from database import get_pool
+import constants.whatsapp_templates as WT
 
 router = APIRouter(prefix="/candidate-portal", tags=["candidate-portal"])
 
@@ -103,7 +104,7 @@ async def send_otp(body: SendOtpBody, conn: asyncpg.Connection = Depends(get_con
 
     try:
         import services.msg91_service as msg91
-        otp_template = os.environ.get("CANDIDATE_OTP_TEMPLATE", "hl_cand_otp_v2").strip()
+        otp_template = WT.CANDIDATE_OTP
         # AUTHENTICATION templates: OTP goes in body AND in the copy-code button (index 0)
         components = [
             {"type": "body", "parameters": [{"type": "text", "text": otp}]},
@@ -671,7 +672,7 @@ async def respond_to_join_intent(
             try:
                 import services.msg91_service as msg91
                 from services.flow_engine import candidate_portal_deep_link
-                template = os.environ.get("DOCS_REQUEST_TEMPLATE", "hl_cand_docs_req_v2").strip()
+                template = WT.CANDIDATE_DOCS_REQUEST
                 portal_url = os.environ.get("CANDIDATE_PORTAL_URL", "https://careers.justaccountants.in").rstrip("/")
                 deep_link = candidate_portal_deep_link(mapping_id, "documents")
                 if template:
@@ -967,7 +968,7 @@ async def pick_slot(
     cand_phone = _format_phone(mapping["candidate_phone"] or "")
     if cand_phone:
         # hl_cand_interview_confirmed_v3: {{1}}=name {{2}}=company {{3}}=slot {{4}}=location
-        slot_template = os.environ.get("CANDIDATE_SLOT_CONFIRMED_TEMPLATE", "hl_cand_interview_confirmed_v3").strip()
+        slot_template = WT.CANDIDATE_SLOT_CONFIRMED
         try:
             components = [{"type": "body", "parameters": [
                 {"type": "text", "text": (mapping["candidate_name"] or "").split()[0] or "there"},
