@@ -8,6 +8,7 @@ import asyncpg
 from database import get_conn
 from pydantic import BaseModel
 from typing import List
+import constants.whatsapp_templates as WT
 
 _IST = ZoneInfo("Asia/Kolkata")
 
@@ -101,7 +102,7 @@ async def book_slots(
         try:
             import services.msg91_service as msg91
             slot_lines = "\n".join(f"  • {slot}" for slot in body.slots)
-            template = os.environ.get("CLIENT_SLOTS_RECEIVED_TEMPLATE", "").strip()
+            template = WT.CLIENT_SLOTS_RECEIVED
             if template:
                 components = [{"type": "body", "parameters": [
                     {"type": "text", "text": slot_lines},
@@ -349,8 +350,8 @@ async def _send_interview_confirmation_to_client(
     from database import get_pool
     import services.msg91_service as msg91
 
-    template = os.environ.get("CLIENT_SLOT_CONFIRMED_TEMPLATE", "").strip()
-    round2_template = os.environ.get("CLIENT_SLOT_CONFIRMED_ROUND2_TEMPLATE", "").strip()
+    template = WT.CLIENT_SLOT_CONFIRMED
+    round2_template = WT.CLIENT_SLOT_CONFIRMED_ROUND2
     # Points at the OTP-based client-portal app, not the legacy /client/{feedback_token}
     # page in this frontend (same fix as the onboarding-success flow).
     portal_url = os.environ.get("CLIENT_PORTAL_URL", "https://employer.justaccountants.in").rstrip("/")
@@ -383,7 +384,7 @@ async def _send_interview_confirmation_to_client(
     # slot message this session. Only used once these are approved and the
     # env vars are flipped; the original templates still expect the link
     # embedded in the body (see the plain body_components below).
-    _BUTTON_TEMPLATES = {"client_interview_confirmed_v2", "hl_client_interview_round2_confirmed_v2"}
+    _BUTTON_TEMPLATES = {WT.CLIENT_SLOT_CONFIRMED_V2, WT.CLIENT_SLOT_CONFIRMED_ROUND2_V2}
     from services.flow_engine import client_portal_deep_link
     body_components = [{"type": "body", "parameters": [
         {"type": "text", "text": poc_name},

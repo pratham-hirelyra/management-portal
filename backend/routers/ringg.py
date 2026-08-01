@@ -7,13 +7,13 @@ POST /ringg/evaluate        — receives call transcript, runs GPT scoring,
 """
 
 import json
-import os
 import uuid
 from fastapi import APIRouter, Depends, Request, BackgroundTasks
 import asyncpg
 from database import get_conn, get_pool
 import services.msg91_service as msg91
 import services.ringg_service as ringg
+import constants.whatsapp_templates as WT
 
 from pydantic import BaseModel
 
@@ -500,7 +500,7 @@ async def _send_portal_report_link(phone_91: str, cand_name: str) -> None:
     portal (no per-candidate suffix needed; candidates log in there via
     phone + OTP), so they can view their evaluation report and all further
     opportunities going forward."""
-    template = os.environ.get("CANDIDATE_EVAL_REPORT_LINK_TEMPLATE", "").strip()
+    template = WT.CANDIDATE_EVAL_REPORT_LINK
     if not template:
         print(f"[ringg] CANDIDATE_EVAL_REPORT_LINK_TEMPLATE not configured — skipping portal link message for {phone_91} (pending template approval)")
         return
@@ -608,7 +608,7 @@ async def _apply_evaluation_result(
                 )
         else:
             # Not Interested Role or organic — no specific client to filter against.
-            template = os.environ.get("CANDIDATE_EVAL_PASS_GENERIC_TEMPLATE", "").strip()
+            template = WT.CANDIDATE_EVAL_PASS_GENERIC
             if template:
                 components = [{"type": "body", "parameters": [{"type": "text", "text": cand_name}]}]
                 try:
@@ -638,7 +638,7 @@ async def _apply_evaluation_result(
         client_is_junior = _is_junior_role(client_job_title)
         position = "Jr. Accountant" if client_is_junior else "Sr. Accountant"
 
-        template_name = "hl_cand_eval_fail"
+        template_name = WT.CANDIDATE_EVAL_FAIL
         components = [{"type": "body", "parameters": [
             {"type": "text", "text": cand_name},
             {"type": "text", "text": position},

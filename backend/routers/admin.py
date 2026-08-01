@@ -5,6 +5,7 @@ import asyncpg
 from pydantic import BaseModel
 from typing import Optional
 from database import get_conn
+import constants.whatsapp_templates as WT
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -15,7 +16,7 @@ async def test_google_chat_alert():
     from services.google_chat_service import send_alert
     await send_alert(
         title="Test Alert — Notification Channel Live",
-        detail="This is a test message from the JustAccountants backend to verify Google Chat alerts are working correctly.",
+        detail="This is a test message from the Hire Lyra backend to verify Google Chat alerts are working correctly.",
         severity="INFO",
         context={"triggered_by": "manual test", "source": "Cloud Run"},
     )
@@ -710,10 +711,9 @@ async def rm_bulk_resend_jd(
             raise HTTPException(500, f"JD card generation failed: {e}")
 
     maps_url = _client_maps_url(dict(client))
-    import os as _os
     # Form already filled → keep the existing reachout template. Form not yet
     # filled → hl_cand_jd_img_v3. See services/msg91_service.py.
-    _existing_tmpl = _os.environ.get("CANDIDATE_INTENT_TEMPLATE_IMG") or _os.environ.get("CANDIDATE_INTENT_TEMPLATE", "")
+    _existing_tmpl = WT.CANDIDATE_INTENT_IMG
     templates_by_mapping = {
         str(r["id"]): (_existing_tmpl if r["candidate_form_submitted"] else msg91.JD_V3_TEMPLATE)
         for r in rows
@@ -925,7 +925,7 @@ async def rm_reject_candidate(
             phone = row["candidate_phone"]
             if not phone:
                 return
-            template = os.environ.get("CANDIDATE_NOT_FIT_CLIENT_TEMPLATE", "").strip()
+            template = WT.CANDIDATE_NOT_FIT_CLIENT
             if template:
                 components = [{"type": "body", "parameters": [
                     {"type": "text", "text": row["candidate_name"] or ""},
@@ -977,7 +977,7 @@ async def rm_send_portal_link(
     company = client["company_name"] or ""
 
     import services.msg91_service as msg91
-    template = os.environ.get("CLIENT_PORTAL_LINK_TEMPLATE", "").strip()
+    template = WT.CLIENT_PORTAL_LINK
     try:
         if template:
             components = [{"type": "body", "parameters": [
@@ -995,7 +995,7 @@ async def rm_send_portal_link(
                 f"• View shortlisted candidates\n"
                 f"• Approve or decline profiles\n"
                 f"• Book interview slots\n\n"
-                f"Let me know if you need any help! — Team JustAccountants",
+                f"Let me know if you need any help! — Team Hire Lyra",
                 sender="client",
             )
     except Exception as e:
@@ -1202,7 +1202,7 @@ async def _send_position_closed_msg(phone: str, candidate_name: str, company_nam
     """Send the position-closed WhatsApp message to a candidate."""
     import os
     import services.msg91_service as msg91
-    template = os.environ.get("CANDIDATE_POSITION_CLOSED_TEMPLATE", "").strip()
+    template = WT.CANDIDATE_POSITION_CLOSED
     first = (candidate_name or "").split()[0] or "there"
     if template:
         components = [{"type": "body", "parameters": [

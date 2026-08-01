@@ -19,6 +19,7 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from typing import Callable, Awaitable
+import constants.whatsapp_templates as WT
 
 
 @dataclass
@@ -43,7 +44,7 @@ async def _send_slot_selection_link(phone: str, mapping_id: uuid.UUID, candidate
     import services.msg91_service as msg91
     portal_url = os.environ.get("CANDIDATE_PORTAL_URL", os.environ.get("FRONTEND_URL", "http://localhost:5174")).rstrip("/")
     schedule_url = f"{portal_url}/c/{candidate_id}" if candidate_id else f"{portal_url}/candidate-schedule/{mapping_id}"
-    slot_template = os.environ.get("CANDIDATE_SLOT_TEMPLATE", "").strip()
+    slot_template = WT.CANDIDATE_SLOT
     if slot_template:
         components = [{"type": "body", "parameters": [{"type": "text", "text": schedule_url}]}]
         await msg91.send_template(phone, slot_template, "en", components, sender="candidate")
@@ -86,7 +87,7 @@ async def _send_onboarding_link(phone: str, intent: str = "INTERESTED") -> None:
     import services.msg91_service as msg91
     frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173").strip().rstrip("/")
     full_url = f"{frontend_url}/apply" if intent == "INTERESTED" else f"{frontend_url}/apply?intent=passive"
-    template = os.environ.get("CANDIDATE_ONBOARDING_LINK_TEMPLATE", "").strip()
+    template = WT.CANDIDATE_ONBOARDING_LINK
 
     if intent == "INTERESTED":
         msg = (
@@ -208,7 +209,7 @@ async def _trigger_ai_call_with_notify(
                 except Exception:
                     pass
 
-    ai_notify_template = os.environ.get("CANDIDATE_AI_INTERVIEW_TEMPLATE", "").strip()
+    ai_notify_template = WT.CANDIDATE_AI_INTERVIEW_NOTIFY
     sent = False
     if ai_notify_template:
         try:
@@ -461,7 +462,7 @@ async def decline_for_filter_mismatch(
     company_name = (client["company_name"] if client else "") or "this client"
 
     if human_reason is not None:
-        template = os.environ.get("CANDIDATE_NOT_FIT_CLIENT_REASON_TEMPLATE", "").strip()
+        template = WT.CANDIDATE_NOT_FIT_CLIENT_REASON
         if not template:
             print(f"[flow] CANDIDATE_NOT_FIT_CLIENT_REASON_TEMPLATE not configured — skipping not-fit-with-reason message for {phone} (pending template approval)")
             return
@@ -479,7 +480,7 @@ async def decline_for_filter_mismatch(
 
     # Don't reuse CANDIDATE_EVALUATION_FAIL_TEMPLATE — its copy says "Thank you for
     # taking our test!", which is wrong here since no AI evaluation ever ran.
-    template = os.environ.get("CANDIDATE_NOT_FIT_CLIENT_TEMPLATE", "").strip()
+    template = WT.CANDIDATE_NOT_FIT_CLIENT
     try:
         if template:
             components = [{"type": "body", "parameters": [
@@ -598,7 +599,7 @@ async def _handle_interested_response(
             """,
             mapping_id,
         )
-        fail_template = os.environ.get("CANDIDATE_EVALUATION_FAIL_TEMPLATE", "").strip()
+        fail_template = WT.CANDIDATE_EVALUATION_FAIL
         sent = False
         if fail_template:
             try:
@@ -706,7 +707,7 @@ async def _handle_not_interested_role_response(
                 pass
 
     elif eval_status and eval_status.lower() in ("fail", "failed", "reject"):
-        fail_template = os.environ.get("CANDIDATE_EVALUATION_FAIL_TEMPLATE", "").strip()
+        fail_template = WT.CANDIDATE_EVALUATION_FAIL
         sent = False
         if fail_template:
             try:
@@ -801,7 +802,7 @@ async def post_form_passive_flow(phone: str, candidate_name: str, location: str 
         city = parts[-2] if len(parts) >= 2 else parts[0] if parts else "your city"
     else:
         city = "your city"
-    template = os.environ.get("CANDIDATE_PASSIVE_ACK_TEMPLATE", "hl_passive_form_ack").strip()
+    template = WT.CANDIDATE_PASSIVE_FORM_ACK
     portal_url = os.environ.get("CANDIDATE_PORTAL_URL", "https://careers.justaccountants.in").rstrip("/")
     try:
         if template:
@@ -869,7 +870,7 @@ async def _handle_not_looking_for_job(
         cand_id,
     )
 
-    not_looking_template = os.environ.get("CANDIDATE_NOT_LOOKING_TEMPLATE", "").strip()
+    not_looking_template = WT.CANDIDATE_NOT_LOOKING
     sent = False
     if not_looking_template:
         try:
@@ -1205,7 +1206,7 @@ async def notify_client_pending_review(client_id: uuid.UUID, candidate_name: str
         # Review directly for this requirement, not just the portal root. For the
         # count-based backlog reminder (multiple accumulated candidates), see
         # _followup_review_pending in cron.py, which uses a separate template.
-        template = os.environ.get("CLIENT_PENDING_REVIEW_TEMPLATE", "hl_client_pending_review_v4").strip()
+        template = WT.CLIENT_PENDING_REVIEW
         if template:
             components = [
                 {"type": "body", "parameters": [
@@ -1267,7 +1268,7 @@ async def notify_client_update(
         # API still returns 200 for the queueing call, so the failure was
         # invisible). v2 is a 2-param "Hi {name}, {message}" template built to
         # match how this function actually gets called.
-        template = os.environ.get("CLIENT_OFFER_UPDATE_TEMPLATE", "hl_client_offer_update_v2").strip()
+        template = WT.CLIENT_OFFER_UPDATE
         portal_url = os.environ.get("CLIENT_PORTAL_URL", "https://employer.justaccountants.in").rstrip("/")
         if template:
             components = [
@@ -1316,7 +1317,7 @@ async def notify_rm_alert(client_id: uuid.UUID, message: str, conn: asyncpg.Conn
 
     try:
         import services.msg91_service as msg91
-        template = os.environ.get("RM_ALERT_TEMPLATE", "hl_rm_client_alert_v1").strip()
+        template = WT.RM_ALERT
         role_label = f"{client['company_name']} ({client['job_title']})" if client["job_title"] else client["company_name"]
         if template:
             components = [{"type": "body", "parameters": [

@@ -23,9 +23,10 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from pydantic import BaseModel
 import asyncpg
 from database import get_conn, get_pool
+import constants.whatsapp_templates as WT
 
-_CLIENT_REACHOUT_TEMPLATE = "client_reachout_3"
-_CANDIDATE_INTENT_TEMPLATE = os.environ.get("CANDIDATE_INTENT_TEMPLATE", "candidate_share_client_jd")
+_CLIENT_REACHOUT_TEMPLATE = WT.CLIENT_REACHOUT_3
+_CANDIDATE_INTENT_TEMPLATE = WT.CANDIDATE_INTENT
 
 router = APIRouter(prefix="/cron", tags=["cron"])
 
@@ -1302,7 +1303,7 @@ _ONBOARDING_THRESHOLDS  = [3, 8, 12]        # hours from last reminder (or onboa
 _AGREEMENT_THRESHOLDS   = [3, 8, 12]        # hours from last reminder (or agreement_sent_at, biz hrs only)
 _SLOT_THRESHOLDS        = [3, 8, 12]        # hours from last reminder (or slot_requested_at)
 _REACHOUT_THRESHOLDS    = [3, 8, 24] # hours from last sent message (candidate JD re-reachout)
-_REACHOUT_TEMPLATES     = ["hl_cand_re_r1_img", "hl_cand_re_r2_img", "hl_cand_re_r3b_img"]
+_REACHOUT_TEMPLATES     = [WT.CANDIDATE_RE_REACHOUT_R1_IMG, WT.CANDIDATE_RE_REACHOUT_R2_IMG, WT.CANDIDATE_RE_REACHOUT_R3B_IMG]
 
 _TEST_THRESHOLDS        = [2, 2, 2]         # minutes (used when test_mode=True, 3-step flows)
 _REACHOUT_TEST_THRESHOLDS = [2, 2, 2]       # minutes (used when test_mode=True, 3-step reachout)
@@ -1322,9 +1323,9 @@ _FUNNEL_STUCK_AI_CALL_HOURS         = 3    # hours since today's client_followup
 _FUNNEL_STUCK_AI_CALL_TEST_MINUTES  = 2    # minutes (test mode)
 _FUNNEL_STUCK_AI_CALL_BATCH         = 5    # max AI calls per cron run
 
-_ONBOARDING_TEMPLATES = ["client_onboarding_r1", "client_onboarding_r2", "hl_ob_r3"]
-_AGREEMENT_TEMPLATES  = ["hl_agr_r1",  "hl_agr_r2",  "hl_agr_r3"]
-_SLOT_TEMPLATES       = ["hl_slot_r1", "hl_slot_r2", "hl_slot_r3"]
+_ONBOARDING_TEMPLATES = [WT.CLIENT_ONBOARDING_R1, WT.CLIENT_ONBOARDING_R2, WT.CLIENT_ONBOARDING_R3]
+_AGREEMENT_TEMPLATES  = [WT.CLIENT_AGREEMENT_REMINDER_R1, WT.CLIENT_AGREEMENT_REMINDER_R2, WT.CLIENT_AGREEMENT_REMINDER_R3]
+_SLOT_TEMPLATES       = [WT.CLIENT_SLOT_REMINDER_R1, WT.CLIENT_SLOT_REMINDER_R2, WT.CLIENT_SLOT_REMINDER_R3]
 
 
 async def _retry_dropped_calls(conn: asyncpg.Connection, test_mode: bool = False) -> dict:
@@ -1408,7 +1409,7 @@ async def _retry_dropped_calls(conn: asyncpg.Connection, test_mode: bool = False
                 import services.msg91_service as _msg91
                 await _msg91.send_bulk_with_buttons(
                     [{"phone": _msg91._format_phone(phone), "mapping_id": str(mapping_row["id"])}],
-                    "hl_cand_drop_final_v2",
+                    WT.CANDIDATE_DROP_FINAL,
                     [first_name],
                 )
                 await conn.execute(
@@ -2034,7 +2035,7 @@ async def cron_client_followups(
 
 _CAND_SLOT_THRESHOLDS       = [3, 8, 12]    # hours from last reminder (or slot_sent_at)
 _CAND_SLOT_TEST_THRESHOLDS  = [2, 2, 2]     # minutes (test mode)
-_CAND_SLOT_TEMPLATES        = ["hl_cand_slot_r1_v3", "hl_cand_slot_r2_v3", "hl_cand_slot_r3_v3"]
+_CAND_SLOT_TEMPLATES        = [WT.CANDIDATE_SLOT_R1_V3, WT.CANDIDATE_SLOT_R2_V3, WT.CANDIDATE_SLOT_R3_V3]
 _CAND_DOCS_REMINDER_THRESHOLDS = [24, 48]   # hours from documents_requested_at
 
 # Slot-link expiry: candidate received the interview-slot link but never booked
@@ -2046,11 +2047,11 @@ _SLOT_AI_CALL_TEST_MINUTES = 2    # minutes (test mode)
 
 _PASSIVE_FORM_THRESHOLDS      = [3, 8, 24]  # hours from passive_form_sent_at (absolute, not rolling)
 _PASSIVE_FORM_TEST_THRESHOLDS = [2, 4, 6]   # minutes (test mode)
-_PASSIVE_FORM_TEMPLATES       = ["hl_passive_form_r1", "hl_passive_form_r2", "hl_passive_form_r3"]
+_PASSIVE_FORM_TEMPLATES       = [WT.CANDIDATE_PASSIVE_FORM_R1, WT.CANDIDATE_PASSIVE_FORM_R2, WT.CANDIDATE_PASSIVE_FORM_R3]
 
 _INTERESTED_FORM_THRESHOLDS      = [3, 8, 24]
 _INTERESTED_FORM_TEST_THRESHOLDS = [2, 4, 6]
-_INTERESTED_FORM_TEMPLATES       = ["hl_interested_form_r1", "hl_interested_form_r2", "hl_interested_form_r3"]
+_INTERESTED_FORM_TEMPLATES       = [WT.CANDIDATE_INTERESTED_FORM_R1, WT.CANDIDATE_INTERESTED_FORM_R2, WT.CANDIDATE_INTERESTED_FORM_R3]
 
 _FRONTEND_BASE = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 
@@ -2214,7 +2215,7 @@ async def _followup_slot_ai_call(conn: asyncpg.Connection, test_mode: bool = Fal
     import services.msg91_service as msg91
 
     portal_url = os.environ.get("CANDIDATE_PORTAL_URL", os.environ.get("FRONTEND_URL", "http://localhost:5174")).rstrip("/")
-    slot_template = os.environ.get("CANDIDATE_SLOT_SELECT_TEMPLATE", "").strip()
+    slot_template = WT.CANDIDATE_SLOT_SELECT
 
     rows = await conn.fetch(
         """
@@ -2321,8 +2322,8 @@ async def _followup_candidate_slot(conn: asyncpg.Connection, test_mode: bool = F
     # a mismatched payload (same failure mode fixed in matching.py's
     # slot-send functions), so the format is only switched once
     # _CAND_SLOT_TEMPLATES actually points at the new names.
-    _V3_SLOT_TEMPLATES = {"hl_cand_slot_r1_v3", "hl_cand_slot_r2_v3", "hl_cand_slot_r3_v3"}
-    _V4_SLOT_TEMPLATES = {"hl_cand_slot_r1_v4", "hl_cand_slot_r2_v4", "hl_cand_slot_r3_v4"}
+    _V3_SLOT_TEMPLATES = {WT.CANDIDATE_SLOT_R1_V3, WT.CANDIDATE_SLOT_R2_V3, WT.CANDIDATE_SLOT_R3_V3}
+    _V4_SLOT_TEMPLATES = {WT.CANDIDATE_SLOT_R1_V4, WT.CANDIDATE_SLOT_R2_V4, WT.CANDIDATE_SLOT_R3_V4}
     portal_url = os.environ.get("CANDIDATE_PORTAL_URL", os.environ.get("FRONTEND_URL", "http://localhost:5174")).rstrip("/")
 
     divisor    = 60 if test_mode else 3600
@@ -2406,7 +2407,7 @@ async def _expire_unbooked_slot_links(conn: asyncpg.Connection, test_mode: bool 
     divisor      = 60 if test_mode else 3600
     cutoff_value = _SLOT_LINK_EXPIRY_TEST_MINUTES if test_mode else _SLOT_LINK_EXPIRY_HOURS
     now          = datetime.now(timezone.utc)
-    template     = os.environ.get("CANDIDATE_LINK_EXPIRED_TEMPLATE", "").strip()
+    template     = WT.CANDIDATE_SLOT_LINK_EXPIRED
 
     rows = await conn.fetch(
         """
@@ -2521,7 +2522,7 @@ async def _followup_interview_confirm_check(conn: asyncpg.Connection) -> dict:
         })
         entry["mapping_ids"].append(r["mapping_id"])
 
-    template = os.environ.get("INTERVIEW_CONFIRM_TEMPLATE", "hl_client_iv_confirm_v1").strip()
+    template = WT.CLIENT_INTERVIEW_CONFIRM_REMINDER
     portal_url = os.environ.get("CLIENT_PORTAL_URL", "https://employer.justaccountants.in").rstrip("/")
     sent = skipped = 0
     for client_id, info in by_client.items():
@@ -2594,7 +2595,7 @@ async def _followup_interview_reminders(conn: asyncpg.Connection) -> dict:
             {"type": "text", "text": _fmt_ist(r["interview_slot"])},
         ]}]
         try:
-            await msg91.send_template(r["phone"], "hl_cand_iv_24h", "en", components, sender="candidate")
+            await msg91.send_template(r["phone"], WT.CANDIDATE_IV_24H, "en", components, sender="candidate")
             await conn.execute(
                 "UPDATE client_candidate_mappings SET interview_reminder_sent = true WHERE id = $1",
                 r["id"],
@@ -2630,7 +2631,7 @@ async def _followup_interview_reminders(conn: asyncpg.Connection) -> dict:
                 {"type": "text", "text": _fmt_ist(r["interview_slot"])},
             ]}]
             try:
-                await msg91.send_template(r["phone"], "hl_cand_iv_day", "en", components, sender="candidate")
+                await msg91.send_template(r["phone"], WT.CANDIDATE_IV_DAY, "en", components, sender="candidate")
                 await conn.execute(
                     "UPDATE client_candidate_mappings SET interview_day_reminder_sent = true WHERE id = $1",
                     r["id"],
@@ -2667,7 +2668,7 @@ async def _followup_interview_reminders(conn: asyncpg.Connection) -> dict:
             {"type": "text", "text": poc_display},
         ]}]
         try:
-            await msg91.send_template(r["phone"], "hl_cand_iv_3h", "en", components, sender="candidate")
+            await msg91.send_template(r["phone"], WT.CANDIDATE_IV_3H, "en", components, sender="candidate")
             await conn.execute(
                 "UPDATE client_candidate_mappings SET interview_3h_reminder_sent = true WHERE id = $1",
                 r["id"],
@@ -2704,7 +2705,7 @@ async def _followup_interview_reminders(conn: asyncpg.Connection) -> dict:
             {"type": "text", "text": poc_display},
         ]}]
         try:
-            await msg91.send_template(r["phone"], "hl_cand_iv_1h", "en", components, sender="candidate")
+            await msg91.send_template(r["phone"], WT.CANDIDATE_IV_1H, "en", components, sender="candidate")
             await conn.execute(
                 "UPDATE client_candidate_mappings SET interview_1h_reminder_sent = true WHERE id = $1",
                 r["id"],
@@ -2732,7 +2733,7 @@ async def _followup_candidate_documents(conn: asyncpg.Connection, test_mode: boo
     thresholds = [2, 4] if test_mode else _CAND_DOCS_REMINDER_THRESHOLDS
     now = datetime.now(timezone.utc)
     portal_url = os.environ.get("CANDIDATE_PORTAL_URL", "https://careers.justaccountants.in").rstrip("/")
-    template = os.environ.get("DOCS_REMINDER_TEMPLATE", "hl_cand_docs_reminder_v1").strip()
+    template = WT.CANDIDATE_DOCS_REMINDER
 
     rows = await conn.fetch(
         """
@@ -2840,7 +2841,7 @@ async def _followup_post_interview_candidate(conn: asyncpg.Connection) -> dict:
             {"type": "text", "text": feedback_url},
         ]}]
         try:
-            await msg91.send_template(r["phone"], "hl_cand_post_iv", "en", components, sender="candidate")
+            await msg91.send_template(r["phone"], WT.CANDIDATE_POST_IV, "en", components, sender="candidate")
             await conn.execute(
                 """
                 UPDATE client_candidate_mappings SET
@@ -2902,7 +2903,7 @@ async def _followup_feedback_pending(conn: asyncpg.Connection) -> dict:
     )
 
     sent = skipped = 0
-    template = os.environ.get("CLIENT_PENDING_FEEDBACK_TEMPLATE", "hl_client_pending_feedback_v1").strip()
+    template = WT.CLIENT_PENDING_FEEDBACK
     portal_url = os.environ.get("CLIENT_PORTAL_URL", "https://employer.justaccountants.in").rstrip("/")
 
     for r in rows:
@@ -2985,7 +2986,7 @@ async def _followup_review_pending(conn: asyncpg.Connection) -> dict:
     )
 
     sent = skipped = 0
-    template = os.environ.get("CLIENT_REVIEW_REMINDER_TEMPLATE", "hl_client_review_reminder_v1").strip()
+    template = WT.CLIENT_REVIEW_REMINDER
     portal_url = os.environ.get("CLIENT_PORTAL_URL", "https://employer.justaccountants.in").rstrip("/")
 
     for r in rows:
@@ -3075,7 +3076,7 @@ async def _expire_offers(conn: asyncpg.Connection) -> dict:
             first_name = (r["cand_name"] or "").split()[0] if r["cand_name"] else "there"
             role = r["job_title"] or "the role"
             if r["phone"]:
-                template = os.environ.get("OFFER_EXPIRED_TEMPLATE", "hl_cand_offer_expired_v1").strip()
+                template = WT.CANDIDATE_OFFER_EXPIRED
                 if template:
                     components = [{"type": "body", "parameters": [
                         {"type": "text", "text": first_name},
