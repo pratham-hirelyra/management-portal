@@ -1600,7 +1600,13 @@ def _extract_city(location: str) -> str | None:
 
 
 async def _run_auto_match(client_id: str) -> None:
-    """Background task: run Step 0 decision-point when a client moves to onboarded."""
+    """Background task: run Step 0 decision-point when a client moves to onboarded.
+
+    A failure here leaves the client's candidates mapped as 'matched' but
+    never queued for JD — invisible in the UI, since nothing else surfaces
+    a client stuck in this state. Alert instead of only logging, so it
+    doesn't sit unnoticed (see incident: VH World Exim / Mark Ortho Care,
+    2026-08-01 — jd_send_queue writes silently stopped for ~1 day)."""
     from database import get_pool
     from routers.matching import decision_point
     pool = get_pool()
@@ -1609,6 +1615,13 @@ async def _run_auto_match(client_id: str) -> None:
             await decision_point(uuid.UUID(client_id), conn)
         except Exception as e:
             print(f"[auto_match] Decision-point failed for {client_id}: {e}")
+            from services.google_chat_service import send_alert
+            await send_alert(
+                title="Auto-matchmake failed on client onboarding",
+                detail=f"decision_point raised for client {client_id}: {e}",
+                severity="ERROR",
+                context={"client_id": client_id, "source": "_run_auto_match"},
+            )
 
 
 @router.get("/agreement/{token}")
