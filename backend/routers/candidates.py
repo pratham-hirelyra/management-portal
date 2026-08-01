@@ -182,13 +182,20 @@ async def candidate_exists(
 ):
     """Used by the public /apply form to catch a repeat submission on blur —
     lets the form point returning candidates at portal login instead of
-    silently overwriting their profile."""
+    silently overwriting their profile.
+
+    Scoped to form_submitted=true: many candidate rows are created by
+    external sourcing automation before the person ever sees the apply
+    link, so a bare phone match would wrongly block first-time applicants
+    from submitting."""
     cleaned = re.sub(r'\D', '', phone)
     if len(cleaned) == 12 and cleaned.startswith('91'):
         cleaned = cleaned[2:]
     if len(cleaned) != 10:
         return {"data": {"exists": False}, "ok": True}
-    exists = await conn.fetchval("SELECT 1 FROM candidates WHERE phone = $1", cleaned)
+    exists = await conn.fetchval(
+        "SELECT 1 FROM candidates WHERE phone = $1 AND form_submitted = true", cleaned
+    )
     return {"data": {"exists": bool(exists)}, "ok": True}
 
 
