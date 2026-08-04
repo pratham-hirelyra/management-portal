@@ -494,6 +494,37 @@ class TestFilter4TravelRadius:
         passed, _ = filter_candidates([cand], make_client(), distances={"test-cand": 100.0})
         assert len(passed) == 1
 
+    def test_skip_radius_for_bypasses_radius_check(self):
+        # 100km would normally fail filter 4 outright
+        cand = {**make_senior(working_radius=10), "id": "test-cand"}
+        passed, rejected = filter_candidates(
+            [cand], make_client(), distances={"test-cand": 100.0},
+            skip_radius_for={"test-cand"},
+        )
+        assert len(passed) == 1
+        assert rejected == []
+
+    def test_skip_radius_for_still_enforces_other_filters(self):
+        # over salary ceiling — skip_radius_for only waives filter 4, not filter 3
+        cand = {**make_senior(working_radius=10, current_salary=100_000), "id": "test-cand"}
+        passed, rejected = filter_candidates(
+            [cand], make_client(max_salary=30_000), distances={"test-cand": 100.0},
+            skip_radius_for={"test-cand"},
+        )
+        assert len(passed) == 0
+        assert any("Salary ceiling" in r["reason"] for r in rejected)
+
+    def test_skip_radius_for_only_applies_to_listed_ids(self):
+        far_skipped = {**make_senior(working_radius=10, id="skip-me"), }
+        far_not_skipped = {**make_senior(working_radius=10, id="dont-skip-me")}
+        passed, rejected = filter_candidates(
+            [far_skipped, far_not_skipped], make_client(),
+            distances={"skip-me": 100.0, "dont-skip-me": 100.0},
+            skip_radius_for={"skip-me"},
+        )
+        assert {c["id"] for c in passed} == {"skip-me"}
+        assert {r["candidate_id"] for r in rejected} == {"dont-skip-me"}
+
 
 # ── Filter 5: Work zone ───────────────────────────────────────────────────────
 

@@ -24,7 +24,7 @@ Workflow:
       /on-candidate-interested sends slot-selection msg.
 
   Path 2:
-    x = ceil((POOL_CAP - active_total) * PATH2_REACH_MULTIPLIER)  # env-configurable, default 15
+    x = max(0, (SLOT_REQUEST_THRESHOLD - active_total) * NULL_EVAL_TO_MMS70_MULTIPLIER)
     Branch A: null-eval free pool ≥ x → send JD to null-eval candidates.
     Branch B: null-eval free pool < x → flag sourcing (qty=x), notify RM.
     Gate: total reached (sourced + interested + not_interested) < GLOBAL_CAP.
@@ -63,10 +63,11 @@ router = APIRouter(prefix="/matching", tags=["matching"])
 
 # ── constants ─────────────────────────────────────────────────────────────────
 SLOT_REQUEST_THRESHOLD = 35  # high-quality (mms >= MMS_GATE) candidates needed before asking the client for interview slots
-POOL_CAP = 750               # total candidate pool target per client — sourcing/reach-out continues until this is reached
+POOL_CAP = 700               # total candidate pool target per client — sourcing/reach-out continues until this is reached
 SINGLE_RUN_CAP = 35         # max candidates inserted in one auto-matchmake tap
 GLOBAL_CAP = 1500
 MMS_GATE = 70.0
+NULL_EVAL_TO_MMS70_MULTIPLIER = 20  # null-eval candidates to reach per still-needed mms>=70 candidate (accounts for AI-eval dropoff)
 
 # matching_state values:
 #   None / NULL    — never run / pre-onboard
@@ -381,14 +382,17 @@ async def _trigger_path2(
 
     active_total: candidates already locked/mapped to this client (mms >= MMS_GATE,
     non-terminal) after _fill_pool_and_route has topped up from the free pool.
-    Sourcing targets the remaining gap to POOL_CAP.
+    Sourcing targets the remaining gap to SLOT_REQUEST_THRESHOLD (35 mms>=70
+    candidates), scaled by NULL_EVAL_TO_MMS70_MULTIPLIER to account for AI-eval
+    dropoff among null-eval candidates reached. Worst case (active_total=0) is
+    35 * 20 = 700, which is under POOL_CAP by construction.
     """
     if client.get("stop_sourcing"):
         return {"branch": "none", "x": 0, "reason": "stop_sourcing"}
 
     # hl_client_search_started is now sent at onboarding time (clients.py), not here
 
-    x = 100
+    x = max(0, (SLOT_REQUEST_THRESHOLD - active_total) * NULL_EVAL_TO_MMS70_MULTIPLIER)
     if x <= 0:
         return {"branch": "none", "x": 0}
 
@@ -403,6 +407,32 @@ async def _trigger_path2(
     )
     contacted = {str(r["candidate_id"]) for r in contacted_rows}
     eligible = [c for c in null_passed if str(c["id"]) not in contacted]
+
+    # Same-city fallback: if the radius-filtered pool is short, top up with
+    # null-eval candidates who gave no area (current_location == city, so their
+    # lat/lng is a city centroid, not precise enough to trust a km cutoff on) but
+    # whose city matches the client's exactly. Every other hard filter still applies.
+    if len(eligible) < x:
+        client_city = (client.get("city") or "").strip().lower()
+        if client_city:
+            already_eligible_ids = {str(c["id"]) for c in eligible}
+            city_only_ids = {
+                str(c["id"]) for c in null_eval_all
+                if str(c["id"]) not in contacted
+                and str(c["id"]) not in already_eligible_ids
+                and (c.get("city") or "").strip().lower() == client_city
+                and (c.get("current_location") or "").strip().lower() == client_city
+            }
+            if city_only_ids:
+                fallback_passed, _ = filter_candidates(
+                    null_eval_all, client, include_muslim=include_muslim,
+                    skip_radius_for=city_only_ids,
+                )
+                fallback_eligible = [
+                    c for c in fallback_passed
+                    if str(c["id"]) in city_only_ids
+                ]
+                eligible = eligible + fallback_eligible
 
     if len(eligible) >= x:
         # Branch A — reach out to null-eval candidates
