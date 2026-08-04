@@ -1612,7 +1612,12 @@ async def _run_auto_match(client_id: str) -> None:
     pool = get_pool()
     async with pool.acquire() as conn:
         try:
-            await decision_point(uuid.UUID(client_id), conn)
+            # include_muslim=False: the manual "Auto-Match" UI defaults to filtering
+            # Muslim candidates out (RMPage.tsx); the automatic onboarding trigger had
+            # no include_muslim arg and silently fell back to decision_point's
+            # include_muslim=True default, so Muslim candidates were never filtered
+            # here regardless of the client's religion_requirement.
+            await decision_point(uuid.UUID(client_id), conn, include_muslim=False)
         except Exception as e:
             print(f"[auto_match] Decision-point failed for {client_id}: {e}")
             from services.google_chat_service import send_alert
