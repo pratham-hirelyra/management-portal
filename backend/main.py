@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from database import init_db, close_db
 from routers import clients, candidates, mappings, scraping, whatsapp, pipeline, schedule, admin, cron
-from routers import matching, outreach, ringg, analytics, client_portal, candidate_portal, company_portal, ce
+from routers import matching, outreach, ringg, analytics, client_portal, candidate_portal, company_portal, ce, tickets
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -55,6 +55,7 @@ app.include_router(client_portal.router)
 app.include_router(candidate_portal.router)
 app.include_router(company_portal.router)
 app.include_router(ce.router)
+app.include_router(tickets.router)
 
 
 @app.exception_handler(Exception)
@@ -62,7 +63,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     """Catch all unhandled 500s, alert Google Chat, return safe response."""
     import asyncio
     from fastapi import HTTPException
-    from services.google_chat_service import alert_exception
+    from services.ops_alert_service import alert_exception
 
     # Let HTTPException pass through normally — those are intentional 4xx/5xx
     if isinstance(exc, HTTPException):

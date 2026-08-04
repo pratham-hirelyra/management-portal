@@ -178,7 +178,8 @@ async def _is_new_contact(conn: asyncpg.Connection, from_phone: str) -> bool:
 
 
 async def _handle_candidate_reply(
-    conn: asyncpg.Connection, from_phone: str, text: str, button_payload: str | None = None
+    conn: asyncpg.Connection, from_phone: str, text: str, button_payload: str | None = None,
+    wa_message_id=None,
 ):
     if not button_payload:
         known = await conn.fetchval(
@@ -230,7 +231,7 @@ async def _handle_candidate_reply(
         # candidates, candidates.ai_rm_enabled — see services/ai_rm_service.py.
         from services import ai_rm_service as _ai_rm
         try:
-            await _ai_rm.handle_free_text(conn, from_phone, text)
+            await _ai_rm.handle_free_text(conn, from_phone, text, wa_message_id)
         except Exception as e:
             print(f"[webhook] ai_rm handle_free_text failed for {from_phone}: {e}")
         return
@@ -547,7 +548,7 @@ async def _check_and_flag_bot(conn: asyncpg.Connection, client_id, from_phone: s
         reason = f"auto-reply keyword in message: {text[:80]}"
         print(f"[bot-detect] client {client_id} auto-flagged as bot — {reason}")
         try:
-            from services.google_chat_service import send_alert
+            from services.ops_alert_service import send_alert
             asyncio.create_task(send_alert(
                 title="Bot Auto-Flagged — Keyword Match",
                 detail=reason,
@@ -571,7 +572,7 @@ async def _check_and_flag_bot(conn: asyncpg.Connection, client_id, from_phone: s
         elapsed = (now - last_aware).total_seconds()
         if elapsed < 30:
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 asyncio.create_task(send_alert(
                     title="Possible Bot — Very Fast Reply",
                     detail=f"Reply received {elapsed:.1f}s after outbound. Message: {text[:120]}\nReview and set is_bot=true manually if needed.",
@@ -588,7 +589,7 @@ async def _check_and_flag_bot(conn: asyncpg.Connection, client_id, from_phone: s
     )
     if recent_inbound >= 5:
         try:
-            from services.google_chat_service import send_alert
+            from services.ops_alert_service import send_alert
             asyncio.create_task(send_alert(
                 title="Possible Bot — High Message Frequency",
                 detail=f"{recent_inbound} inbound messages in 5 minutes. Message: {text[:120]}\nReview and set is_bot=true manually if needed.",
@@ -602,7 +603,8 @@ async def _check_and_flag_bot(conn: asyncpg.Connection, client_id, from_phone: s
 
 
 async def _handle_client_reply(
-    conn: asyncpg.Connection, from_phone: str, text: str, button_payload: str | None = None
+    conn: asyncpg.Connection, from_phone: str, text: str, button_payload: str | None = None,
+    wa_message_id=None,
 ):
     # ── STOP button — phone-level opt-out (only DND whole client if no phones remain) ──
     if button_payload == "STOP" or (text or "").strip().upper() == "STOP":
@@ -943,7 +945,7 @@ async def _handle_client_reply(
     else:
         from services import ai_client_rm_service as _ai_client_rm
         try:
-            await _ai_client_rm.handle_free_text(conn, from_phone, text)
+            await _ai_client_rm.handle_free_text(conn, from_phone, text, wa_message_id)
         except Exception as e:
             print(f"[webhook] ai_client_rm handle_free_text failed for {from_phone}: {e}")
 
@@ -1370,10 +1372,11 @@ async def _process_webhook(payload: dict):
                 if msgs:
                     text = msgs[0].get("text", {}).get("body", "").strip()
 
-            await conn.execute(
+            wa_message_id = await conn.fetchval(
                 """
                 INSERT INTO whatsapp_messages (message_type, direction, phone, message_text, status)
                 VALUES ('inbound_reply', 'inbound', $1, $2, 'received')
+                RETURNING id
                 """,
                 from_phone, button_payload or text or content_type,
             )
@@ -1382,9 +1385,9 @@ async def _process_webhook(payload: dict):
                 return
 
             if our_number == candidate_num:
-                await _handle_candidate_reply(conn, from_phone, text, button_payload)
+                await _handle_candidate_reply(conn, from_phone, text, button_payload, wa_message_id)
             elif our_number == client_num:
-                await _handle_client_reply(conn, from_phone, text, button_payload)
+                await _handle_client_reply(conn, from_phone, text, button_payload, wa_message_id)
 
         except Exception as e:
             print(f"[webhook] process_webhook error: {e}")

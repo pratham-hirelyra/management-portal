@@ -437,3 +437,126 @@ export function scoreBadge(score: number): string {
   if (score >= 50) return 'bg-amber-100 text-amber-700'
   return 'bg-red-100 text-red-600'
 }
+
+// ── Ticketing system ─────────────────────────────────────────────────────────
+
+export type TicketStatus =
+  | 'NEW' | 'CLAIMED' | 'IN_PROGRESS' | 'WAITING_FOR_CUSTOMER'
+  | 'CUSTOMER_REPLIED' | 'RESOLVED' | 'REOPENED'
+
+export type TicketPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+
+export type TicketChannel = 'client' | 'candidate' | 'internal'
+
+export interface Ticket {
+  id: string
+  queue_id: string
+  category_id: string
+  status: TicketStatus
+  priority: TicketPriority
+  source: string
+  subject: string | null
+  phone: string | null
+  channel: TicketChannel
+  client_id: string | null
+  candidate_id: string | null
+  mapping_id: string | null
+  fingerprint: string | null
+  occurrence_count: number
+  claimed_by: string | null
+  claimed_at: string | null
+  first_response_at: string | null
+  resolved_at: string | null
+  reopened_at: string | null
+  reopen_count: number
+  last_activity_at: string
+  created_by: string | null
+  created_at: string
+  updated_at: string
+  // joined display fields
+  queue_name: string
+  queue_code: string
+  category_name: string
+  category_code: string
+  claimed_by_name: string | null
+  company_name: string | null
+  client_job_title: string | null
+  client_stage: ClientStage | null
+  candidate_name: string | null
+}
+
+export interface TicketDetail extends Ticket {
+  related_tickets: Array<{
+    id: string
+    status: TicketStatus
+    priority: TicketPriority
+    source: string
+    subject: string | null
+    created_at: string
+    resolved_at: string | null
+  }>
+}
+
+export interface TicketTimelineEntry {
+  id: string
+  kind: 'whatsapp' | 'activity'
+  direction: 'inbound' | 'outbound' | null
+  body: string | null
+  type: string | null // ticket_activities.type — 'created'|'claimed'|'note'|'reassigned'|'resolved'|'reopened'|'customer_replied'|'system'
+  actor_ce_id: string | null
+  actor_label: string | null
+  meta: Record<string, unknown> | null
+  created_at: string
+}
+
+export interface TicketQueue {
+  id: string
+  name: string
+  code: string
+  description: string | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface TicketCategory {
+  id: string
+  queue_id: string
+  name: string
+  code: string
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface TicketAnalytics {
+  open_count: number
+  resolved_today: number
+  by_category: { name: string; count: number }[]
+  by_queue: { name: string; count: number }[]
+  avg_first_response_minutes: number | null
+  avg_resolution_minutes: number | null
+}
+
+export function ticketStatusBadge(status: TicketStatus): string {
+  const map: Record<TicketStatus, string> = {
+    NEW: 'bg-blue-100 text-blue-700',
+    CLAIMED: 'bg-indigo-100 text-indigo-700',
+    IN_PROGRESS: 'bg-amber-100 text-amber-700',
+    WAITING_FOR_CUSTOMER: 'bg-gray-100 text-gray-600',
+    CUSTOMER_REPLIED: 'bg-teal-100 text-teal-700',
+    RESOLVED: 'bg-green-100 text-green-700',
+    REOPENED: 'bg-orange-100 text-orange-700',
+  }
+  return map[status] ?? 'bg-gray-100 text-gray-500'
+}
+
+export function ticketPriorityBadge(priority: TicketPriority): string {
+  const map: Record<TicketPriority, string> = {
+    LOW: 'bg-gray-100 text-gray-600',
+    MEDIUM: 'bg-amber-100 text-amber-700',
+    HIGH: 'bg-orange-100 text-orange-700',
+    CRITICAL: 'bg-red-100 text-red-600',
+  }
+  return map[priority] ?? 'bg-gray-100 text-gray-500'
+}

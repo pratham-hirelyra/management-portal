@@ -1,74 +1,61 @@
 """
-Customer Executive auto-assignment sweep.
+Customer Executive shared-pool fill.
 
-Mirrors rm_service.assign_rm's style (capacity-aware, least-loaded-first) but
-runs as a periodic sweep rather than a single-event trigger, since the CE
-pool has multiple, unrelated entry points (a candidate WhatsApp reply moving
-a client to 'interested', or a fresh job-portal scrape) rather than one place
-to hook into.
+Mirrors the bottom_end ticket desk's claim-based model, not
+rm_service.assign_rm's auto-pick style — this just tops up a shared pool of
+unclaimed (ce_id=NULL) ce_assignments rows that any active top_end CE can
+claim from (see routers/ce.py's claim endpoint), rather than picking a
+specific CE itself.
 """
+from datetime import datetime, timedelta, timezone
+
 import asyncpg
+
+_IST = timezone(timedelta(hours=5, minutes=30))  # matches routers/cron.py's convention
+_ELIGIBLE_SINCE = datetime(2026, 7, 15, tzinfo=_IST)
+# Explicit cutoff — only clients created on/after midnight IST on this date
+# enter the top_end pool; older backlog stays out of this queue. Deliberately
+# a tz-aware datetime, not a bare date: asyncpg encodes a bare
+# datetime.date compared against a timestamptz column using the *local
+# machine's* timezone for the implicit midnight, which is not what you want
+# on a server that isn't itself running in IST.
 
 
 async def sweep_assign(conn: asyncpg.Connection) -> dict:
     """
-    Assign any eligible, not-yet-assigned client to the least-loaded active
-    top_end customer executive under their daily cap. Returns counts.
+    Add any newly-eligible, not-yet-in-pool client to the shared pool as an
+    unclaimed row. Returns the count added.
 
-    Pool (top_end only — bottom_end queue logic not yet defined):
+    Pool (top_end only — bottom_end is the claim-based ticket desk instead,
+    see services/ticket_service.py):
       segment = 'active_job_post' AND stage IN ('reachout_sent', 'interested')
       OR segment = 'employer_lead' AND stage = 'interested'
-      excluding clients already in ce_assignments (permanent 1:1 attribution)
+      OR segment = 'ca_network'    AND stage = 'interested'
+      AND created_at >= _ELIGIBLE_SINCE
+      excluding clients already in ce_assignments (permanent 1:1 attribution
+      once claimed — a client that's already in the pool, claimed or not,
+      never gets a second row)
 
-    Priority order:
-      1. active_job_post + interested       (highest — already showed intent)
-      2. employer_lead + interested
-      3. active_job_post + reachout_sent    (lowest — not yet confirmed interest)
-    Newest leads (by created_at) go first within each tier.
+    Claim priority (see routers/ce.py::get_ce_queue) is a fixed tier order —
+    Job Post Interested > Employer Lead Interested > CA Network Interested >
+    Job Post Reachout Sent — not insertion order, so which rows land here
+    first doesn't itself determine call priority.
     """
-    eligible = await conn.fetch(
+    rows = await conn.fetch(
         """
-        SELECT c.id
+        INSERT INTO ce_assignments (ce_id, client_id)
+        SELECT NULL, c.id
         FROM clients c
         WHERE (
             (c.segment = 'active_job_post' AND c.stage::text IN ('reachout_sent', 'interested'))
             OR (c.segment = 'employer_lead' AND c.stage::text = 'interested')
+            OR (c.segment = 'ca_network'    AND c.stage::text = 'interested')
         )
+        AND c.created_at >= $1
         AND NOT EXISTS (SELECT 1 FROM ce_assignments a WHERE a.client_id = c.id)
-        ORDER BY
-            CASE
-                WHEN c.segment = 'active_job_post' AND c.stage::text = 'interested'    THEN 1
-                WHEN c.segment = 'employer_lead'   AND c.stage::text = 'interested'    THEN 2
-                WHEN c.segment = 'active_job_post' AND c.stage::text = 'reachout_sent' THEN 3
-            END,
-            c.created_at DESC
-        """
+        ON CONFLICT (client_id) DO NOTHING
+        RETURNING client_id
+        """,
+        _ELIGIBLE_SINCE,
     )
-    if not eligible:
-        return {"assigned": 0, "skipped_no_capacity": 0}
-
-    assigned = 0
-    for row in eligible:
-        # Least-loaded active top_end CE with today's pending count under their cap
-        ce = await conn.fetchrow(
-            """
-            SELECT ce.id,
-                   COUNT(a.id) FILTER (WHERE a.status = 'pending' AND a.call_date <= CURRENT_DATE) AS today_pending
-            FROM customer_executives ce
-            LEFT JOIN ce_assignments a ON a.ce_id = ce.id
-            WHERE ce.is_active = true AND ce.tier = 'top_end'
-            GROUP BY ce.id, ce.max_clients_per_day
-            HAVING COUNT(a.id) FILTER (WHERE a.status = 'pending' AND a.call_date <= CURRENT_DATE) < ce.max_clients_per_day
-            ORDER BY today_pending ASC
-            LIMIT 1
-            """
-        )
-        if not ce:
-            break  # no CE has capacity today — stop, leave the rest unassigned for the next sweep
-        await conn.execute(
-            "INSERT INTO ce_assignments (ce_id, client_id) VALUES ($1, $2) ON CONFLICT (client_id) DO NOTHING",
-            ce["id"], row["id"],
-        )
-        assigned += 1
-
-    return {"assigned": assigned, "skipped_no_capacity": len(eligible) - assigned}
+    return {"added_to_pool": len(rows)}

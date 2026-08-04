@@ -106,7 +106,7 @@ async def _process_evaluation(payload: dict) -> None:
         except Exception as e:
             print(f"[ringg] evaluation error: {e}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("RinggAI evaluation processing failed", str(e), severity="ERROR", context={"phone": payload.get("phone") or payload.get("to_number", "")})
             except Exception:
                 pass
@@ -295,7 +295,7 @@ async def _do_evaluate(conn: asyncpg.Connection, payload: dict) -> None:
     except Exception as e:
         print(f"[ringg] report regeneration failed for {cand_id}: {e}")
         try:
-            from services.google_chat_service import send_alert
+            from services.ops_alert_service import send_alert
             await send_alert("Evaluation report regeneration failed", str(e), severity="ERROR", context={"cand_id": str(cand_id)})
         except Exception:
             pass
@@ -323,7 +323,7 @@ async def _process_client_evaluation(payload: dict) -> None:
         except Exception as e:
             print(f"[ringg] client evaluation error: {e}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("RinggAI client evaluation processing failed", str(e), severity="ERROR", context={"phone": payload.get("phone") or payload.get("to_number", "")})
             except Exception:
                 pass
@@ -465,7 +465,7 @@ async def _do_client_evaluate(conn: asyncpg.Connection, payload: dict) -> None:
             except Exception as e:
                 print(f"[ringg] client-evaluate: onboarding link send failed for {client_id}: {e}")
                 try:
-                    from services.google_chat_service import send_alert
+                    from services.ops_alert_service import send_alert
                     await send_alert("Client onboarding link send failed after AI call", str(e), severity="ERROR", context={"client_id": str(client_id), "phone": phone_91})
                 except Exception:
                     pass
@@ -510,7 +510,7 @@ async def _send_portal_report_link(phone_91: str, cand_name: str) -> None:
     except Exception as e:
         print(f"[ringg] portal report-link template '{template}' failed: {e}")
         try:
-            from services.google_chat_service import send_alert
+            from services.ops_alert_service import send_alert
             await send_alert("Portal report-link template send failed", str(e), severity="ERROR", context={"phone": phone_91})
         except Exception:
             pass
@@ -616,7 +616,7 @@ async def _apply_evaluation_result(
                 except Exception as e:
                     print(f"[ringg] generic pass template '{template}' failed: {e}")
                     try:
-                        from services.google_chat_service import send_alert
+                        from services.ops_alert_service import send_alert
                         await send_alert("Generic pass template send failed", str(e), severity="ERROR", context={"phone": phone_91, "cand_id": str(cand_id)})
                     except Exception:
                         pass
@@ -648,7 +648,7 @@ async def _apply_evaluation_result(
         except Exception as e:
             print(f"[ringg] eval result template '{template_name}' failed: {e}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("Eval result template send failed", str(e), severity="ERROR", context={"phone": phone_91, "template": template_name, "cand_id": str(cand_id)})
             except Exception:
                 pass
@@ -705,7 +705,7 @@ async def _apply_evaluation_result(
     except Exception as e:
         print(f"[ringg] on_evaluation_complete failed for {cand_id}: {e}")
         try:
-            from services.google_chat_service import send_alert
+            from services.ops_alert_service import send_alert
             await send_alert("on_evaluation_complete failed", str(e), severity="ERROR", context={"cand_id": str(cand_id)})
         except Exception:
             pass

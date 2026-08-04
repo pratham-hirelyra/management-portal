@@ -15,8 +15,9 @@ Flow (all keyed off button id, so no pending-state table is needed):
   2. Tap Yes (CLIENT_ISSUE_YES) -> "Where are you currently stuck?"
      [Interview] [Feedback] [Finalizing Candidate] [Others]
   3. Tap any of those (CLIENT_STUCK_*) -> "A customer support member from
-     our team will reach out to you shortly." + notify the RM on WhatsApp
-     and Google Chat.
+     our team will reach out to you shortly." + open a ticket in the
+     Client Queue (see services/ticket_service.py) for a bottom_end CE to
+     claim.
 """
 
 import asyncpg
@@ -107,21 +108,16 @@ async def handle_button(conn: asyncpg.Connection, from_phone: str, button_payloa
         except Exception as e:
             print(f"[client_support_bot] ack send failed for {from_phone}: {e}")
 
-        if client:
-            message = f"Client {client['company_name'] or from_phone} is stuck on: {stuck_reason}. They need a callback."
-            try:
-                from services.flow_engine import notify_rm_alert
-                await notify_rm_alert(client["id"], message, conn)
-            except Exception as e:
-                print(f"[client_support_bot] notify_rm_alert failed for {from_phone}: {e}")
-            try:
-                from services.google_chat_service import send_alert
-                await send_alert(
-                    "Client needs support", message, severity="WARNING",
-                    context={"phone": from_phone, "client_id": str(client["id"]), "stuck_on": stuck_reason},
-                )
-            except Exception as e:
-                print(f"[client_support_bot] google chat alert failed for {from_phone}: {e}")
+        try:
+            import services.ticket_service as ticket_service
+            await ticket_service.create_or_reopen_ticket(
+                conn, phone=from_phone, channel="client",
+                queue_code="client_queue", category_code="client_stuck", source="support_bot_stuck",
+                reason=f"Stuck on: {stuck_reason}", subject=stuck_reason,
+                client_id=client["id"] if client else None,
+            )
+        except Exception as e:
+            print(f"[client_support_bot] ticket creation failed for {from_phone}: {e}")
         return True
 
     return False

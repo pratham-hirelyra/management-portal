@@ -1290,7 +1290,7 @@ async def _process_cv_upload(
         if isinstance(results[0], Exception):
             print(f"[upload-cv] resume upload failed for {phone}: {results[0]}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert(
                     "Candidate resume upload failed", str(results[0]),
                     severity="ERROR", context={"phone": phone},
@@ -1303,7 +1303,7 @@ async def _process_cv_upload(
         if isinstance(results[1], Exception):
             print(f"[upload-cv] photo upload failed for {phone}: {results[1]}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert(
                     "Candidate photo upload failed", str(results[1]),
                     severity="ERROR", context={"phone": phone},
@@ -1361,7 +1361,7 @@ async def _process_cv_upload(
         # onto the candidate record — same "invisible failure" risk as above.
         print(f"[upload-cv] DB update failed for {phone}: {e}")
         try:
-            from services.google_chat_service import send_alert
+            from services.ops_alert_service import send_alert
             await send_alert(
                 "Candidate upload-cv DB update failed", str(e),
                 severity="ERROR", context={"phone": phone, "cv_url": cv_url or "", "photo_url": photo_url or ""},

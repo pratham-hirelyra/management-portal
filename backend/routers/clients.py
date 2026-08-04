@@ -1615,7 +1615,7 @@ async def _run_auto_match(client_id: str) -> None:
             await decision_point(uuid.UUID(client_id), conn)
         except Exception as e:
             print(f"[auto_match] Decision-point failed for {client_id}: {e}")
-            from services.google_chat_service import send_alert
+            from services.ops_alert_service import send_alert
             await send_alert(
                 title="Auto-matchmake failed on client onboarding",
                 detail=f"decision_point raised for client {client_id}: {e}",

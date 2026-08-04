@@ -259,7 +259,7 @@ async def send_batch(
         except Exception as e:
             print(f"[batch] Bulk send failed: {e}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("Bulk JD send failed", str(e), severity="ERROR", context={"client_id": str(client_id), "batch_size": len(mapping_rows)})
             except Exception:
                 pass
@@ -637,7 +637,7 @@ async def cron_t1_reminders(conn: asyncpg.Connection = Depends(get_conn)):
             except Exception as e:
                 print(f"[reminders-t1] candidate WA failed for {r['mapping_id']}: {e}")
                 try:
-                    from services.google_chat_service import send_alert
+                    from services.ops_alert_service import send_alert
                     await send_alert("T-1 candidate reminder send failed", str(e), severity="ERROR", context={"mapping_id": str(r["mapping_id"]), "phone": r["candidate_phone"]})
                 except Exception:
                     pass
@@ -654,7 +654,7 @@ async def cron_t1_reminders(conn: asyncpg.Connection = Depends(get_conn)):
             except Exception as e:
                 print(f"[reminders-t1] client WA failed for {r['mapping_id']}: {e}")
                 try:
-                    from services.google_chat_service import send_alert
+                    from services.ops_alert_service import send_alert
                     await send_alert("T-1 client reminder send failed", str(e), severity="ERROR", context={"mapping_id": str(r["mapping_id"]), "phone": r["client_phone"]})
                 except Exception:
                     pass
@@ -715,7 +715,7 @@ async def cron_t2_reminders(conn: asyncpg.Connection = Depends(get_conn)):
             except Exception as e:
                 print(f"[reminders-t2] candidate WA failed for {r['mapping_id']}: {e}")
                 try:
-                    from services.google_chat_service import send_alert
+                    from services.ops_alert_service import send_alert
                     await send_alert("T-2 candidate reminder send failed", str(e), severity="ERROR", context={"mapping_id": str(r["mapping_id"]), "phone": r["candidate_phone"]})
                 except Exception:
                     pass
@@ -862,7 +862,7 @@ async def _handle_outcome(mapping_id: uuid.UUID, row: dict, conn: asyncpg.Connec
             except Exception as e:
                 print(f"[outcome] mutual match candidate WA failed for mapping {mapping_id}: {e}")
                 try:
-                    from services.google_chat_service import send_alert
+                    from services.ops_alert_service import send_alert
                     await send_alert("Mutual match candidate notification failed", str(e), severity="ERROR", context={"mapping_id": str(mapping_id), "phone": candidate["phone"]})
                 except Exception:
                     pass
@@ -877,7 +877,7 @@ async def _handle_outcome(mapping_id: uuid.UUID, row: dict, conn: asyncpg.Connec
             except Exception as e:
                 print(f"[outcome] mutual match RM WA failed for mapping {mapping_id}: {e}")
                 try:
-                    from services.google_chat_service import send_alert
+                    from services.ops_alert_service import send_alert
                     await send_alert("Mutual match RM notification failed", str(e), severity="ERROR", context={"mapping_id": str(mapping_id), "rm_phone": rm_phone})
                 except Exception:
                     pass
@@ -909,7 +909,7 @@ async def _handle_outcome(mapping_id: uuid.UUID, row: dict, conn: asyncpg.Connec
             except Exception as e:
                 print(f"[outcome] all-rejected RM WA failed for client {client_id}: {e}")
                 try:
-                    from services.google_chat_service import send_alert
+                    from services.ops_alert_service import send_alert
                     await send_alert("All-batch-rejected RM notification failed", str(e), severity="ERROR", context={"client_id": str(client_id), "rm_phone": rm_phone, "batch_num": batch_num})
                 except Exception:
                     pass
@@ -927,7 +927,7 @@ async def _handle_outcome(mapping_id: uuid.UUID, row: dict, conn: asyncpg.Connec
             except Exception as e:
                 print(f"[outcome] candidate-declined RM WA failed for mapping {mapping_id}: {e}")
                 try:
-                    from services.google_chat_service import send_alert
+                    from services.ops_alert_service import send_alert
                     await send_alert("Candidate-declined RM notification failed", str(e), severity="ERROR", context={"mapping_id": str(mapping_id), "rm_phone": rm_phone})
                 except Exception:
                     pass

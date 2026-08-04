@@ -75,7 +75,7 @@ async def _send_intro_video(phone: str) -> None:
     except Exception as e:
         print(f"[flow] intro video send failed for {phone}: {e}")
         try:
-            from services.google_chat_service import send_alert
+            from services.ops_alert_service import send_alert
             await send_alert("Intro video send failed", str(e), severity="ERROR", context={"phone": phone})
         except Exception:
             pass
@@ -110,7 +110,7 @@ async def _send_onboarding_link(phone: str, intent: str = "INTERESTED") -> None:
     except Exception as e:
         print(f"[flow] onboarding link send failed for {phone}: {e}")
         try:
-            from services.google_chat_service import send_alert
+            from services.ops_alert_service import send_alert
             await send_alert("Onboarding link send failed", str(e), severity="ERROR", context={"phone": phone, "intent": intent})
         except Exception:
             pass
@@ -183,7 +183,7 @@ async def _trigger_ai_call_with_notify(
         except Exception as e:
             print(f"[flow] RinggAI trigger failed for {from_phone}: {e}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("RinggAI trigger failed", str(e), severity="ERROR", context={"phone": from_phone, "cand_id": str(cand_id)})
             except Exception:
                 pass
@@ -204,7 +204,7 @@ async def _trigger_ai_call_with_notify(
             except Exception as db_e:
                 print(f"[flow] failed to mark DROPPED for {from_phone}: {db_e}")
                 try:
-                    from services.google_chat_service import send_alert
+                    from services.ops_alert_service import send_alert
                     await send_alert("Failed to mark candidate DROPPED", str(db_e), severity="ERROR", context={"phone": from_phone, "cand_id": str(cand_id)})
                 except Exception:
                     pass
@@ -219,7 +219,7 @@ async def _trigger_ai_call_with_notify(
         except Exception as e:
             print(f"[flow] ai_interview template '{ai_notify_template}' failed: {e} — falling back to text")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("AI interview template send failed", str(e), severity="ERROR", context={"phone": from_phone, "template": ai_notify_template})
             except Exception:
                 pass
@@ -238,7 +238,7 @@ async def _trigger_ai_call_with_notify(
         except Exception as e:
             print(f"[flow] plain text WA failed for {from_phone}: {e}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("AI interview plain text WA failed", str(e), severity="ERROR", context={"phone": from_phone})
             except Exception:
                 pass
@@ -608,7 +608,7 @@ async def _handle_interested_response(
             except Exception as e:
                 print(f"[flow] fail template '{fail_template}' failed: {e} — falling back to text")
                 try:
-                    from services.google_chat_service import send_alert
+                    from services.ops_alert_service import send_alert
                     await send_alert("Evaluation fail template send failed", str(e), severity="ERROR", context={"phone": from_phone, "template": fail_template})
                 except Exception:
                     pass
@@ -632,7 +632,7 @@ async def _handle_interested_response(
                 except Exception as e:
                     print(f"[flow] direct AI call trigger failed for {from_phone}: {e}")
                     try:
-                        from services.google_chat_service import send_alert
+                        from services.ops_alert_service import send_alert
                         await send_alert("Direct AI call trigger failed", str(e), severity="ERROR", context={"phone": from_phone, "cand_id": str(row["candidate_id"])})
                     except Exception:
                         pass
@@ -701,7 +701,7 @@ async def _handle_not_interested_role_response(
         except Exception as e:
             print(f"[flow] not_interested_role pass ack failed: {e}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("Not-interested-role pass ack failed", str(e), severity="ERROR", context={"phone": from_phone})
             except Exception:
                 pass
@@ -716,7 +716,7 @@ async def _handle_not_interested_role_response(
             except Exception as e:
                 print(f"[flow] not_interested_role fail template failed: {e}")
                 try:
-                    from services.google_chat_service import send_alert
+                    from services.ops_alert_service import send_alert
                     await send_alert("Not-interested-role fail template send failed", str(e), severity="ERROR", context={"phone": from_phone, "template": fail_template})
                 except Exception:
                     pass
@@ -745,7 +745,7 @@ async def _handle_not_interested_role_response(
             except Exception as e:
                 print(f"[flow] not_interested_role null-eval ack failed: {e}")
                 try:
-                    from services.google_chat_service import send_alert
+                    from services.ops_alert_service import send_alert
                     await send_alert("Not-interested-role null-eval ack failed", str(e), severity="ERROR", context={"phone": from_phone})
                 except Exception:
                     pass
@@ -1142,7 +1142,7 @@ async def execute_candidate_flow(
         except Exception as e:
             print(f"[flow] after_hook error for mapping {mapping_id}: {e}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("Flow after_hook failed", str(e), severity="ERROR", context={"mapping_id": str(mapping_id), "stage": current_stage, "trigger": trigger})
             except Exception:
                 pass
@@ -1154,7 +1154,7 @@ async def execute_candidate_flow(
         except Exception as e:
             print(f"[flow] pool check error for mapping {mapping_id}: {e}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("Client pool health check failed", str(e), severity="ERROR", context={"mapping_id": str(mapping_id)})
             except Exception:
                 pass
@@ -1314,7 +1314,7 @@ async def notify_rm_alert(client_id: uuid.UUID, message: str, conn: asyncpg.Conn
 
     if not rm or not rm["phone"]:
         try:
-            from services.google_chat_service import send_alert
+            from services.ops_alert_service import send_alert
             await send_alert("RM alert — no RM assigned", message, severity="WARNING", context=context)
         except Exception:
             pass
@@ -1336,7 +1336,7 @@ async def notify_rm_alert(client_id: uuid.UUID, message: str, conn: asyncpg.Conn
     except Exception as e:
         print(f"[notify_rm_alert] WhatsApp to RM failed for {client_id}: {e}")
         try:
-            from services.google_chat_service import send_alert
+            from services.ops_alert_service import send_alert
             await send_alert("RM alert — WhatsApp send failed", f"{message}\n\nError: {e}", severity="ERROR", context=context)
         except Exception:
             pass

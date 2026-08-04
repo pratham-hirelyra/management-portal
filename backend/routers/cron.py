@@ -114,7 +114,7 @@ async def _send_client_reachout_step(
         except Exception as e:
             print(f"[cron/client-reachout] send failed for {phone}: {e}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("Client reachout MSG91 send failed", str(e), severity="ERROR", context={"phone": phone, "client_id": client_id_str})
             except Exception:
                 pass
@@ -614,7 +614,7 @@ async def _do_candidate_reachout(conn: asyncpg.Connection, test_mode: bool = Fal
             except Exception as e:
                 print(f"[cron] candidate re-reachout attempt {attempt} failed for {phone} mapping {mapping_id}: {e}")
                 try:
-                    from services.google_chat_service import send_alert
+                    from services.ops_alert_service import send_alert
                     await send_alert("Candidate re-reachout send failed", str(e), severity="ERROR", context={"phone": phone, "mapping_id": str(mapping_id), "attempt": attempt})
                 except Exception:
                     pass
@@ -1039,7 +1039,7 @@ async def _scrape_portal(portal: str, input_overrides: dict | None = None) -> li
     except Exception as e:
         print(f"[cron/scrape-jobs] {portal} failed: {e}")
         try:
-            from services.google_chat_service import alert_cron_failure
+            from services.ops_alert_service import alert_cron_failure
             await alert_cron_failure(f"scrape-jobs/{portal}", str(e))
         except Exception:
             pass
@@ -1430,7 +1430,7 @@ async def _retry_dropped_calls(conn: asyncpg.Connection, test_mode: bool = False
             except Exception as e:
                 print(f"[cron/retry-dropped] final drop message failed for {phone}: {e}")
                 try:
-                    from services.google_chat_service import send_alert
+                    from services.ops_alert_service import send_alert
                     await send_alert("Retry dropped call final message failed", str(e), severity="ERROR", context={"phone": phone, "cand_id": str(r["id"])})
                 except Exception:
                     pass
@@ -1470,7 +1470,7 @@ async def _retry_dropped_calls(conn: asyncpg.Connection, test_mode: bool = False
         except Exception as e:
             print(f"[cron/retry-dropped] trigger failed for {phone}: {e}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("Retry dropped call RinggAI trigger failed", str(e), severity="ERROR", context={"phone": phone, "cand_id": str(r["id"]), "retry_count": retry_count})
             except Exception:
                 pass
@@ -1565,7 +1565,7 @@ async def _followup_reachout_ai_call(conn: asyncpg.Connection, test_mode: bool =
                 str(e)[:500], call_row["id"],
             )
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("Reachout AI call trigger failed", str(e), severity="ERROR", context={"client_id": str(c["id"]), "phone": phone})
             except Exception:
                 pass
@@ -1656,7 +1656,7 @@ async def _followup_funnel_stuck_ai_call(conn: asyncpg.Connection, test_mode: bo
                 str(e)[:500], call_row["id"],
             )
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("Funnel stuck AI call trigger failed", str(e), severity="ERROR", context={"client_id": str(c["id"]), "phone": phone})
             except Exception:
                 pass
@@ -1740,7 +1740,7 @@ async def _followup_onboarding(conn: asyncpg.Connection, test_mode: bool = False
         except Exception as e:
             print(f"[followup/onboarding] {phone}: {e}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("Onboarding reminder send failed", str(e), severity="ERROR", context={"phone": phone, "template": template, "reminder_count": count})
             except Exception:
                 pass
@@ -1827,7 +1827,7 @@ async def _followup_agreement(conn: asyncpg.Connection, test_mode: bool = False)
         except Exception as e:
             print(f"[followup/agreement] {phone}: {e}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("Agreement reminder send failed", str(e), severity="ERROR", context={"phone": phone, "template": template, "reminder_count": count})
             except Exception:
                 pass
@@ -1980,12 +1980,23 @@ async def cron_client_followups(
     from services.ce_service import sweep_assign
     ce_assignment = await sweep_assign(conn)
 
+    # System-detected tickets — client relationships where the reminder crons
+    # above have already nudged (or, for review_pending, never stop nudging)
+    # with no result, plus placements ready to be finalized with nobody
+    # nudged toward it. Turns "stuck/ready with no result" into a claimable
+    # ticket instead of silence. See ticket_service.sweep_stuck_in_pipeline /
+    # sweep_ready_to_advance / sweep_client_closure.
+    from services.ticket_service import sweep_stuck_in_pipeline, sweep_ready_to_advance, sweep_client_closure
+    stuck_tickets = await sweep_stuck_in_pipeline(conn)
+    ready_tickets = await sweep_ready_to_advance(conn)
+    closure_tickets = await sweep_client_closure(conn)
+
     total_sent = (
         onboarding["sent"] + agreement["sent"]
         + reachout_ai_call["sent"] + funnel_stuck_ai_call["sent"]
         + feedback_requests["sent"] + feedback_pending["sent"] + review_pending["sent"]
     )
-    print(f"[cron/client-followups] total_sent={total_sent} onboarding={onboarding} agreement={agreement} reachout_ai_call={reachout_ai_call} funnel_stuck_ai_call={funnel_stuck_ai_call} feedback_requests={feedback_requests} feedback_pending={feedback_pending} review_pending={review_pending} ce_assignment={ce_assignment}")
+    print(f"[cron/client-followups] total_sent={total_sent} onboarding={onboarding} agreement={agreement} reachout_ai_call={reachout_ai_call} funnel_stuck_ai_call={funnel_stuck_ai_call} feedback_requests={feedback_requests} feedback_pending={feedback_pending} review_pending={review_pending} ce_assignment={ce_assignment} stuck_tickets={stuck_tickets} ready_tickets={ready_tickets} closure_tickets={closure_tickets}")
 
     return {
         "data": {
@@ -1997,6 +2008,9 @@ async def cron_client_followups(
             "feedback_pending":     feedback_pending,
             "review_pending":       review_pending,
             "ce_assignment":        ce_assignment,
+            "stuck_tickets":        stuck_tickets,
+            "ready_tickets":        ready_tickets,
+            "closure_tickets":      closure_tickets,
             "total_sent":           total_sent,
         },
         "ok": True,
@@ -2240,7 +2254,7 @@ async def _followup_slot_ai_call(conn: asyncpg.Connection, test_mode: bool = Fal
         except Exception as e:
             print(f"[cron/slot-ai-call] failed for mapping {r['mapping_id']}: {e}")
             try:
-                from services.google_chat_service import send_alert
+                from services.ops_alert_service import send_alert
                 await send_alert("Slot reminder AI call failed", str(e), severity="ERROR", context={"mapping_id": str(r["mapping_id"]), "phone": phone})
             except Exception:
                 pass
@@ -3218,7 +3232,7 @@ async def cron_candidate_followups(
         redact        = await _redact_cvs(conn, batch=5)
         religion      = await _classify_religions(conn, batch=50)
     except Exception as e:
-        from services.google_chat_service import alert_cron_failure
+        from services.ops_alert_service import alert_cron_failure
         import traceback
         await alert_cron_failure("candidate-followups", traceback.format_exc())
         raise
@@ -3423,7 +3437,7 @@ async def _enrich_one(client: dict, sem: asyncio.Semaphore) -> dict:
         except Exception as e:
             print(f"[enrich] {cid} ({name}) AI error: {e}")
             asyncio.create_task(
-                __import__("services.google_chat_service", fromlist=["send_alert"]).send_alert(
+                __import__("services.ops_alert_service", fromlist=["send_alert"]).send_alert(
                     title=f"Enrich AI Error: {name}",
                     detail=f"{type(e).__name__}: {e}",
                     severity="ERROR",
@@ -3637,7 +3651,7 @@ async def cron_enrich_clients(
         results = await asyncio.gather(*[_enrich_one(dict(c), sem) for c in clients])
         enriched, not_found, recruiters, duplicates = await _apply_enrich_results(list(results), get_pool())
     except Exception as e:
-        from services.google_chat_service import alert_cron_failure
+        from services.ops_alert_service import alert_cron_failure
         await alert_cron_failure("enrich-clients", f"{type(e).__name__}: {e}")
         raise
 

@@ -7,7 +7,7 @@ BASE_URL = "https://api.msg91.com/api/v5/whatsapp"
 
 async def _alert_msg91(phone: str, error: str, msg_type: str = "") -> None:
     try:
-        from services.google_chat_service import alert_msg91_failure
+        from services.ops_alert_service import alert_msg91_failure
         await alert_msg91_failure(phone, error, msg_type)
     except Exception:
         pass

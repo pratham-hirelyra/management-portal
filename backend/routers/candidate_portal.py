@@ -480,7 +480,9 @@ async def get_jobs(candidate_id: uuid.UUID, conn: asyncpg.Connection = Depends(g
             cl.job_timings,
             cl.job_type,
             cl.tools_requirements,
-            cl.jd_card_url
+            cl.jd_card_url,
+            cl.poc_name,
+            cl.poc_phone
         FROM client_candidate_mappings ccm
         JOIN clients cl ON cl.id = ccm.client_id
         WHERE ccm.candidate_id = $1
@@ -994,6 +996,24 @@ async def pick_slot(
             except Exception as e2:
                 print(f"[pick-slot] candidate WA failed: {e2}")
 
+        # The approved slot-confirmation template (hl_cand_interview_confirmed_v3)
+        # has a fixed 4-parameter body (name/company/slot/location) — adding the
+        # client's contact number means either a new Meta-approved template
+        # version, or a supplementary plain-text follow-up. Doing the latter
+        # here: no approval needed, and we're still well within the session
+        # window (candidate just took an action in the portal).
+        if raw_poc:
+            try:
+                poc_who = mapping["poc_name"] or "the HR contact"
+                await msg91.send_text(
+                    cand_phone,
+                    f"If you need to reach {mapping['company_name']} before the interview, "
+                    f"you can contact {poc_who} at {poc_display}.",
+                    sender="candidate",
+                )
+            except Exception as e3:
+                print(f"[pick-slot] candidate POC-contact follow-up failed: {e3}")
+
     # ── WA to client POC (reuse the same template as RM-booked flow) ─────────
     try:
         from routers.schedule import _send_interview_confirmation_to_client
@@ -1001,16 +1021,5 @@ async def pick_slot(
         print(f"[pick-slot] client WA sent for mapping {mapping_id}")
     except Exception as e:
         print(f"[pick-slot] client WA failed: {e}")
-
-    try:
-        from services.google_chat_service import send_alert
-        await send_alert(
-            f"Slot confirmed — {mapping['candidate_name']}",
-            f"{mapping['candidate_name']} confirmed: *{label}* for {mapping['company_name']}",
-            severity="INFO",
-            context={"mapping_id": str(mapping_id), "slot": label},
-        )
-    except Exception:
-        pass
 
     return {"ok": True, "slot_label": label}

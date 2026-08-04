@@ -6,7 +6,6 @@ pydantic[email]
 httpx
 weasyprint
 google-cloud-storage
-google-auth
 openai
 pypdf
 PyMuPDF

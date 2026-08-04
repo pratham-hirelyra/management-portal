@@ -12,11 +12,11 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 @router.post("/test-alert")
 async def test_google_chat_alert():
-    """Fire a test alert to Google Chat to verify the notification channel is working."""
-    from services.google_chat_service import send_alert
+    """Fire a test engineering ticket to verify the ops_alert_service -> ticket pipeline is working."""
+    from services.ops_alert_service import send_alert
     await send_alert(
         title="Test Alert — Notification Channel Live",
-        detail="This is a test message from the Hire Lyra backend to verify Google Chat alerts are working correctly.",
+        detail="This is a test message from the Hire Lyra backend to verify the engineering ticket pipeline is working correctly.",
         severity="INFO",
         context={"triggered_by": "manual test", "source": "Cloud Run"},
     )

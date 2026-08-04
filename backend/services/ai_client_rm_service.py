@@ -36,9 +36,9 @@ import asyncpg
 from openai import AsyncOpenAI
 
 from database import get_pool
-import services.flow_engine as flow_engine
 import services.msg91_service as msg91
-from services.google_chat_service import send_alert
+import services.ticket_service as ticket_service
+from services.ops_alert_service import send_alert
 
 _client: AsyncOpenAI | None = None
 
@@ -204,8 +204,13 @@ def _sanitize_reply(text: str) -> str:
 
 async def _do_escalate(
     conn: asyncpg.Connection, client_id, from_phone: str, reason: str, text: str = "",
+    category: str = "ai_escalation",
 ) -> None:
-    """Holding message to the client + notify a human. Never silent."""
+    """Holding message to the client + a claimable ticket. Never silent.
+
+    Google Chat / RM-WhatsApp paging is deliberately not used here anymore —
+    the ticket (and its in-page unclaimed-ticket toast on the bottom_end CE
+    desk) is the notification now, not a parallel channel."""
     try:
         await msg91.send_text(
             from_phone,
@@ -215,26 +220,15 @@ async def _do_escalate(
     except Exception as e:
         print(f"[ai_client_rm] escalation holding message failed for {from_phone}: {e}")
 
-    company_name = ""
-    if client_id:
-        row = await conn.fetchrow("SELECT company_name FROM clients WHERE id = $1", client_id)
-        company_name = (row["company_name"] if row else "") or ""
-
-    message = f"Client {company_name or from_phone} ({from_phone}) needs human follow-up: {reason}"
-    if text:
-        message += f'\nMessage: "{text[:300]}"'
-
-    if client_id:
-        try:
-            await flow_engine.notify_rm_alert(client_id, message, conn)
-            return
-        except Exception as e:
-            print(f"[ai_client_rm] notify_rm_alert failed, falling back to ops alert: {e}")
-
-    await send_alert(
-        "AI client RM escalation", message, severity="WARNING",
-        context={"phone": from_phone, "client_id": str(client_id) if client_id else "unknown"},
-    )
+    try:
+        await ticket_service.create_or_reopen_ticket(
+            conn, phone=from_phone, channel="client",
+            queue_code="client_queue" if category == "ai_escalation" else "payments_queue",
+            category_code=category, source=category, reason=reason,
+            client_id=client_id, subject=(reason[:120] if reason else None),
+        )
+    except Exception as e:
+        print(f"[ai_client_rm] ticket creation failed for {from_phone}: {e}")
 
 
 # ── Audit log ─────────────────────────────────────────────────────────────────
@@ -311,8 +305,8 @@ get_client_status or get_recent_messages to get this same data again.
 HARD CONSTRAINTS — never break these:
 - Never state a commercial term that didn't come from that status message or a tool \
 call this turn — fee amount, payment terms, replacement period, and contract specifics \
-are NOT available to you and must always go to a human. If asked, say your customer \
-executive will confirm the specifics.
+are NOT available to you and must always go to a human via escalate_commercial(). If \
+asked, say your customer executive will confirm the specifics.
 - Never disclose an individual candidate's personal details (name, phone, salary) over \
 WhatsApp — the portal is where they review actual candidate profiles. You may reference \
 counts/stages (e.g. "you have 3 profiles awaiting review") from get_pipeline_summary.
@@ -335,17 +329,19 @@ knowledge, call reply() with a grounded, honest answer.
 - If it's a plain acknowledgment or a message that's just closing out the conversation — \
 "ok", "thanks", "got it", "sure", a 👍 — and doesn't ask anything new, call no_reply(). \
 Don't send a closing message back; that just invites another "ok" in return.
-- If the client explicitly asks for a human, sounds frustrated, disputes something, \
-raises a commercial/contractual/legal question, or wants to cancel, call escalate() \
-immediately — don't attempt to handle it yourself.
+- If the client raises a commercial/contractual/legal question — fee, payment terms, \
+replacement period, contract specifics, or wants to cancel — call escalate_commercial() \
+immediately.
+- If the client explicitly asks for a human, sounds frustrated, or disputes something \
+non-commercial, call escalate() immediately — don't attempt to handle it yourself.
 - If a tool call comes back empty or you're genuinely unsure, call escalate() rather \
 than guess.
 
 TOOL DISCIPLINE:
 - Call get_pipeline_summary before answering anything about candidate status or counts.
 - Never invent a client_id — only use IDs exactly as provided in the status message.
-- End every turn with exactly one of reply(), escalate(), or no_reply() — never answer \
-in plain text without calling one of these.
+- End every turn with exactly one of reply(), escalate(), escalate_commercial(), or \
+no_reply() — never answer in plain text without calling one of these.
 """
 
 _TOOLS = [
@@ -386,7 +382,12 @@ _TOOLS = [
     }},
     {"type": "function", "function": {
         "name": "escalate",
-        "description": "Hand this off to a human RM — sends the client a holding message and notifies a human. Ends the turn.",
+        "description": "Hand this off to a human customer executive — sends the client a holding message and opens a support ticket. Ends the turn.",
+        "parameters": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]},
+    }},
+    {"type": "function", "function": {
+        "name": "escalate_commercial",
+        "description": "Hand this off to a human for a commercial or contractual matter — fee, payment terms, replacement period, contract specifics. Sends the client a holding message and opens a ticket in the finance/commercial queue. Ends the turn.",
         "parameters": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]},
     }},
     {"type": "function", "function": {
@@ -396,7 +397,7 @@ _TOOLS = [
     }},
 ]
 
-_TERMINAL = {"reply", "escalate", "no_reply"}
+_TERMINAL = {"reply", "escalate", "escalate_commercial", "no_reply"}
 
 
 # ── Tool dispatch ─────────────────────────────────────────────────────────────
@@ -438,6 +439,10 @@ async def _execute_terminal(conn: asyncpg.Connection, name: str, args: dict, fro
         await _do_escalate(conn, client_id, from_phone, reason=args.get("reason", ""))
         return
 
+    if name == "escalate_commercial":
+        await _do_escalate(conn, client_id, from_phone, reason=args.get("reason", ""), category="commercial_escalation")
+        return
+
     # no_reply — nothing to do
 
 
@@ -468,7 +473,7 @@ async def _run_agent_loop(conn: asyncpg.Connection, from_phone: str, text: str, 
             messages.append({"role": "assistant", "content": msg.content or ""})
             messages.append({
                 "role": "user",
-                "content": "You must end your turn by calling reply(), escalate(), or no_reply().",
+                "content": "You must end your turn by calling reply(), escalate(), escalate_commercial(), or no_reply().",
             })
             continue
 
@@ -518,7 +523,7 @@ async def _run_agent_loop(conn: asyncpg.Connection, from_phone: str, text: str, 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-async def handle_free_text(conn: asyncpg.Connection, from_phone: str, text: str) -> None:
+async def handle_free_text(conn: asyncpg.Connection, from_phone: str, text: str, wa_message_id=None) -> None:
     """
     Called from routers/whatsapp.py for inbound client free-text that didn't
     match a deterministic button/keyword flow, for clients NOT in the
@@ -527,6 +532,10 @@ async def handle_free_text(conn: asyncpg.Connection, from_phone: str, text: str)
     Buffers this fragment against client_ai_pending rather than running the
     agent immediately — see the debounce note in the module docstring.
     """
+    ticket_id = await ticket_service.log_customer_reply(conn, from_phone, "client", wa_message_id, text)
+    if ticket_id:
+        return  # an open (or just-reopened) ticket exists — human-owned, AI stays silent
+
     if os.environ.get("CLIENT_AI_RM_ENABLED", "false").strip().lower() != "true":
         return
 
