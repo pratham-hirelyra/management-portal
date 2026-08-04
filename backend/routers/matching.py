@@ -408,6 +408,32 @@ async def _trigger_path2(
     contacted = {str(r["candidate_id"]) for r in contacted_rows}
     eligible = [c for c in null_passed if str(c["id"]) not in contacted]
 
+    # Same-city fallback: if the radius-filtered pool is short, top up with
+    # null-eval candidates who gave no area (current_location == city, so their
+    # lat/lng is a city centroid, not precise enough to trust a km cutoff on) but
+    # whose city matches the client's exactly. Every other hard filter still applies.
+    if len(eligible) < x:
+        client_city = (client.get("city") or "").strip().lower()
+        if client_city:
+            already_eligible_ids = {str(c["id"]) for c in eligible}
+            city_only_ids = {
+                str(c["id"]) for c in null_eval_all
+                if str(c["id"]) not in contacted
+                and str(c["id"]) not in already_eligible_ids
+                and (c.get("city") or "").strip().lower() == client_city
+                and (c.get("current_location") or "").strip().lower() == client_city
+            }
+            if city_only_ids:
+                fallback_passed, _ = filter_candidates(
+                    null_eval_all, client, include_muslim=include_muslim,
+                    skip_radius_for=city_only_ids,
+                )
+                fallback_eligible = [
+                    c for c in fallback_passed
+                    if str(c["id"]) in city_only_ids
+                ]
+                eligible = eligible + fallback_eligible
+
     if len(eligible) >= x:
         # Branch A — reach out to null-eval candidates
         await _set_state(client_id, "path2_a", conn)

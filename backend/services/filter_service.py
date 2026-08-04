@@ -89,10 +89,19 @@ def filter_candidates(
     client: dict,
     distances: dict | None = None,
     include_muslim: bool = True,
+    skip_radius_for: set[str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
-    """Returns (passed_candidates, rejection_log)."""
+    """Returns (passed_candidates, rejection_log).
+
+    skip_radius_for: candidate ids that bypass filter 4 (travel radius) entirely —
+    for city-only candidates (no area given, so their lat/lng is a city centroid
+    and not trustworthy for a precise km cutoff) considered as a same-city fallback
+    when the normal radius-filtered pool comes up short. Every other filter still
+    applies to these candidates.
+    """
     passed: list[dict] = []
     rejected: list[dict] = []
+    skip_radius_for = skip_radius_for or set()
 
     is_senior_jd = _is_senior_jd(client.get("job_title"))     # → Path A (Accountant)
     is_junior_jd = _is_junior_jd(client.get("job_title"))     # → Path B (DEO/Junior)
@@ -143,40 +152,43 @@ def filter_candidates(
                 continue
 
         # Filter 4 — travel radius (km)
-        # If client has no geocoded coordinates, distance cannot be determined — exclude.
-        if not client.get("location_lat") or not client.get("location_lng"):
-            rejected.append({"candidate_id": cid, "name": name,
-                             "reason": "Travel radius: client location not geocoded yet"})
-            continue
-        if not c.get("location_lat") or not c.get("location_lng"):
-            rejected.append({"candidate_id": cid, "name": name,
-                             "reason": "Travel radius: candidate location not geocoded"})
-            continue
-        try:
-            actual_km = distance_km(c, client, distances)
-            # 4a — Client radius: candidate must be within the distance the client accepts
-            client_radius = client.get("travel_radius")
-            if client_radius is not None and actual_km > float(client_radius):
+        # Skipped entirely for same-city, no-area candidates passed in via skip_radius_for —
+        # their lat/lng is a city centroid, not precise enough for a km cutoff to be trusted.
+        if cid not in skip_radius_for:
+            # If client has no geocoded coordinates, distance cannot be determined — exclude.
+            if not client.get("location_lat") or not client.get("location_lng"):
                 rejected.append({"candidate_id": cid, "name": name,
-                                 "reason": f"Client radius: {actual_km:.1f} km > client limit {client_radius} km"})
+                                 "reason": "Travel radius: client location not geocoded yet"})
                 continue
-            # 4b — Candidate radius: candidate must be willing to travel that far (2 km grace)
-            # If candidate has no working_radius, assume they're willing to travel as far as the client expects.
-            # If the client also has no travel_radius, fall back to 5 km.
-            working_radius = c.get("working_radius")
-            if working_radius is not None:
-                default_radius = float(working_radius)
-            elif client.get("travel_radius") is not None:
-                default_radius = float(client["travel_radius"])
-            else:
-                default_radius = 5.0
-            limit_km = default_radius + 2.0
-            if actual_km > limit_km:
+            if not c.get("location_lat") or not c.get("location_lng"):
                 rejected.append({"candidate_id": cid, "name": name,
-                                 "reason": f"Travel radius: {actual_km:.1f} km > limit {limit_km:.0f} km"})
+                                 "reason": "Travel radius: candidate location not geocoded"})
                 continue
-        except (TypeError, ValueError):
-            pass
+            try:
+                actual_km = distance_km(c, client, distances)
+                # 4a — Client radius: candidate must be within the distance the client accepts
+                client_radius = client.get("travel_radius")
+                if client_radius is not None and actual_km > float(client_radius):
+                    rejected.append({"candidate_id": cid, "name": name,
+                                     "reason": f"Client radius: {actual_km:.1f} km > client limit {client_radius} km"})
+                    continue
+                # 4b — Candidate radius: candidate must be willing to travel that far (2 km grace)
+                # If candidate has no working_radius, assume they're willing to travel as far as the client expects.
+                # If the client also has no travel_radius, fall back to 5 km.
+                working_radius = c.get("working_radius")
+                if working_radius is not None:
+                    default_radius = float(working_radius)
+                elif client.get("travel_radius") is not None:
+                    default_radius = float(client["travel_radius"])
+                else:
+                    default_radius = 5.0
+                limit_km = default_radius + 2.0
+                if actual_km > limit_km:
+                    rejected.append({"candidate_id": cid, "name": name,
+                                     "reason": f"Travel radius: {actual_km:.1f} km > limit {limit_km:.0f} km"})
+                    continue
+            except (TypeError, ValueError):
+                pass
 
         # Filter 5 — work zone (commented out: work_preference not enforced as hard filter)
         # if is_industrial and _is_corporate_only_candidate(c):
